@@ -1,0 +1,630 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Modern UI enhancements */
+.scrollbar-thin::-webkit-scrollbar { width: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background-color: rgba(148,163,184,0.4); border-radius: 10px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background-color: rgba(148,163,184,0.65); }
+
+/* Slide strip horizontal scroller */
+.slide-scroller::-webkit-scrollbar {
+  height: 8px;
+}
+.slide-scroller::-webkit-scrollbar-track {
+  background: #f3f4f6;
+  border-radius: 4px;
+}
+.slide-scroller::-webkit-scrollbar-thumb {
+  background: #9ca3af;
+  border-radius: 4px;
+}
+.slide-scroller::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+body, #root {
+  background: radial-gradient(circle at 30% 20%, #f0f7ff, #f8fafc 60%);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, sans-serif;
+}
+
+/* Disable text selection globally for slide elements */
+.reveal, .reveal * {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Re-enable text selection only when editing */
+.ck-editor__editable, 
+.ck-editor__editable *,
+.ck-content,
+.ck-content * {
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Disable drag for all elements by default */
+* {
+  -webkit-user-drag: none !important;
+  -khtml-user-drag: none !important;
+  -moz-user-drag: none !important;
+  -o-user-drag: none !important;
+}
+
+/* Prevent context menu on slide elements to avoid browser text selection UI */
+.reveal .slides {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+.reveal {
+  height: 100%;
+  background: #ffffff;
+}
+
+.reveal section {
+  height: 100%;
+  display: flex;
+  /* background: #ffffff !important; */
+}
+
+/* Ensure text is visible in white theme */
+.reveal .slides section {
+  color: #374151 !important;
+}
+
+/* Ensure hover states work properly */
+.group:hover .group-hover\:opacity-100 {
+  opacity: 1 !important;
+}
+
+/* Ensure draggable elements maintain proper pointer events */
+.react-draggable {
+  pointer-events: auto !important;
+}
+
+.react-draggable * {
+  pointer-events: auto !important;
+}
+
+/* CKEditor custom styles for inline editing */
+.ck-editor {
+  z-index: 9999 !important;
+  position: relative !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.ck-editor__main {
+  z-index: 9999 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.ck-editor__top {
+  z-index: 10000 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.ck-editor__editable {
+  min-height: inherit !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  outline: none !important;
+  z-index: 9999 !important;
+  position: relative !important;
+  color: inherit !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  line-height: inherit !important;
+  text-align: inherit !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  display: block !important;
+}
+
+.ck-editor__editable:focus {
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background: transparent !important;
+}
+
+/* Ensure editor gets focus immediately */
+.ck-editor__editable.ck-focused {
+  background: transparent !important;
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Preserve heading styles in editor */
+.ck-editor__editable h1,
+.ck-editor__editable h2,
+.ck-editor__editable h3,
+.ck-editor__editable h4,
+.ck-editor__editable h5,
+.ck-editor__editable h6 {
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  color: inherit !important;
+  margin: inherit !important;
+  padding: inherit !important;
+  line-height: inherit !important;
+}
+
+/* Preserve paragraph styles in editor */
+.ck-editor__editable p {
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  color: inherit !important;
+  margin: inherit !important;
+  padding: inherit !important;
+  line-height: inherit !important;
+}
+
+/* Ensure toolbar is visible - general */
+.ck-toolbar {
+  z-index: 10000 !important;
+  background: white !important;
+  border: 1px solid #d1d5db !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  display: flex !important;
+  border-radius: 4px !important;
+  margin-bottom: 4px !important;
+}
+
+/* Inline editor specific toolbar styles */
+.ck-editor[data-inline="true"] .ck-toolbar {
+  position: relative !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 10000 !important;
+}
+
+/* Classic editor specific styles */
+.ck-editor__top .ck-toolbar {
+  border-bottom: 1px solid #d1d5db !important;
+  border-radius: 4px 4px 0 0 !important;
+}
+
+/* Balloon toolbar specific styles */
+.ck-balloon-panel {
+  z-index: 10000 !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Make sure the inline editor container is visible */
+.inline-editor-container {
+  z-index: 9999 !important;
+  position: relative !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Force inline editor toolbar to be visible */
+.inline-editor-container .ck-toolbar {
+  position: static !important;
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 10000 !important;
+  margin-bottom: 8px !important;
+}
+
+/* Inherit parent styles for headings and text */
+.inline-editor-container h1,
+.inline-editor-container h2,
+.inline-editor-container h3,
+.inline-editor-container h4,
+.inline-editor-container h5,
+.inline-editor-container h6,
+.inline-editor-container p {
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  color: inherit !important;
+  margin: inherit !important;
+  padding: inherit !important;
+  line-height: inherit !important;
+  text-align: inherit !important;
+}
+
+/* Override any potential reveal.js conflicts */
+.reveal .inline-editor-container,
+.reveal .ck-editor,
+.reveal .ck-editor__main,
+.reveal .ck-editor__top,
+.reveal .ck-toolbar,
+.reveal .ck-editor__editable {
+  visibility: visible !important;
+  opacity: 1 !important;
+  display: block !important;
+  z-index: 9999 !important;
+}
+
+.reveal .ck-toolbar {
+  display: flex !important;
+}
+
+/* Preserve reveal.js text styles in editor */
+.reveal .ck-editor__editable h1,
+.reveal .ck-editor__editable h2,
+.reveal .ck-editor__editable h3,
+.reveal .ck-editor__editable p {
+  color: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  line-height: inherit !important;
+  margin: inherit !important;
+}
+
+/* Inline editor container styles */
+.inline-editor-container .ck-editor__editable {
+  min-height: 30px !important;
+  padding: 8px !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+}
+
+.inline-editor-container .ck-editor__editable:focus {
+  background: transparent !important;
+  outline: none !important;
+  border: none !important;
+}
+
+/* Inline editor toolbar styling */
+.ck-toolbar {
+  border: 1px solid #d1d5db !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.25), 0 4px 6px -2px rgba(0, 0, 0, 0.1) !important;
+  padding: 8px !important;
+  margin-bottom: 8px !important;
+  max-width: 100% !important;
+  flex-wrap: wrap !important;
+  position: relative !important;
+  z-index: 1001 !important;
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Ensure CKEditor components are always visible */
+.ck-editor {
+  position: relative !important;
+  z-index: 1000 !important;
+}
+
+.ck-editor__main {
+  z-index: 1000 !important;
+}
+
+.ck-toolbar {
+  z-index: 1001 !important;
+}
+
+.ck-balloon-panel {
+  z-index: 1002 !important;
+}
+
+.ck-dropdown__panel {
+  z-index: 1003 !important;
+}
+
+/* Force visibility of toolbar buttons */
+.ck-toolbar .ck-button {
+  display: inline-block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Toolbar items styling */
+.ck-toolbar .ck-toolbar__items {
+  flex-wrap: wrap !important;
+  gap: 2px !important;
+}
+
+.ck-button {
+  margin: 1px !important;
+  border-radius: 4px !important;
+  min-height: 32px !important;
+}
+
+.ck-button:hover {
+  background: #f3f4f6 !important;
+}
+
+.ck-button.ck-on {
+  background: #dbeafe !important;
+  color: #1d4ed8 !important;
+}
+
+/* Dropdown styling */
+.ck-dropdown__panel {
+  border-radius: 6px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1) !important;
+  border: 1px solid #d1d5db !important;
+}
+
+.ck-content {
+  color: #374151 !important;
+  font-family: inherit !important;
+  line-height: 1.6 !important;
+}
+
+.ck-content p {
+  margin: 0.5em 0 !important;
+}
+
+.ck-content h1, .ck-content h2, .ck-content h3, .ck-content h4 {
+  margin: 0.5em 0 !important;
+  line-height: 1.2 !important;
+}
+
+.ck-content h1 {
+  font-size: 2.25rem !important;
+  font-weight: bold !important;
+}
+
+.ck-content h2 {
+  font-size: 1.875rem !important;
+  font-weight: bold !important;
+}
+
+.ck-content h3 {
+  font-size: 1.5rem !important;
+  font-weight: bold !important;
+}
+
+.ck-content h4 {
+  font-size: 1.25rem !important;
+  font-weight: bold !important;
+}
+
+/* Ensure CKEditor toolbar is above other elements */
+.ck-toolbar {
+  z-index: 2000 !important;
+  position: relative !important;
+  display: block !important;
+  visibility: visible !important;
+}
+
+.ck-balloon-panel {
+  z-index: 2001 !important;
+  position: absolute !important;
+  display: block !important;
+  visibility: visible !important;
+}
+
+.ck-dropdown__panel {
+  z-index: 2002 !important;
+}
+
+/* Inline editor specific styles */
+.ck-editor__main {
+  z-index: 1500 !important;
+}
+
+/* Force toolbar visibility for inline editor */
+.ck-editor__editable.ck-focused .ck-toolbar {
+  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* PowerPoint-style inline editing */
+.inline-text-element {
+  transition: all 0.2s ease !important;
+}
+
+/* .inline-text-element:hover {
+  background: rgba(59, 130, 246, 0.05) !important;
+  border-color: rgba(59, 130, 246, 0.2) !important;
+} */
+
+.inline-editor-container {
+  position: relative !important;
+  display: inline-block !important;
+}
+
+.inline-editor-container .ck-balloon-panel {
+  z-index: 2005 !important;
+}
+
+/* Ensure inline editor wrapper is visible */
+.editor-wrapper .ck-editor {
+  display: block !important;
+  visibility: visible !important;
+}
+
+.editor-wrapper .ck-toolbar {
+  margin-bottom: 10px !important;
+  border: 1px solid #ccc !important;
+  border-radius: 4px !important;
+  background: white !important;
+}
+
+/* Modal specific CKEditor styles */
+.editor-wrapper .ck-editor__main {
+  position: relative !important;
+  z-index: 1 !important;
+}
+
+.editor-wrapper .ck-toolbar {
+  position: relative !important;
+  z-index: 2 !important;
+  background: white !important;
+  border: 1px solid #d1d5db !important;
+  border-radius: 6px !important;
+  margin-bottom: 16px !important;
+}
+
+.editor-wrapper .ck-editor__editable {
+  min-height: 300px !important;
+  border: 1px solid #d1d5db !important;
+  border-radius: 6px !important;
+  padding: 16px !important;
+  background: white !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+}
+
+.editor-wrapper .ck-editor__editable:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1) !important;
+  outline: none !important;
+}
+
+/* Balloon editor specific styles */
+.ck-balloon-panel_with-arrow:after,
+.ck-balloon-panel_with-arrow:before {
+  z-index: 1004 !important;
+}
+
+/* Make sure balloon panel is always visible */
+.ck-balloon-panel {
+  position: fixed !important;
+  transform: none !important;
+}
+
+/* Ensure editor content is visible during editing */
+.ck-editor__editable_inline {
+  min-height: 40px !important;
+  padding: 8px !important;
+  border: 1px solid #ccc !important;
+  border-radius: 4px !important;
+}
+
+/* Reset any problematic positioning for modal editor */
+.editor-wrapper .ck-balloon-panel {
+  position: absolute !important;
+  z-index: 10 !important;
+}
+
+/* Override any fixed positioning that might break the modal */
+.editor-wrapper .ck-dropdown__panel {
+  position: absolute !important;
+  z-index: 20 !important;
+}
+
+/* Table styles */
+.ck-content .table {
+  margin: 1em 0 !important;
+}
+
+.ck-content .table table {
+  border-collapse: collapse !important;
+  border: 1px solid #d1d5db !important;
+  width: 100% !important;
+}
+
+.ck-content .table table td,
+.ck-content .table table th {
+  border: 1px solid #d1d5db !important;
+  padding: 0.5em !important;
+}
+
+.ck-content .table table th {
+  background: #f9fafb !important;
+  font-weight: bold !important;
+}
+
+/* List styles */
+.ck-content ul, .ck-content ol {
+  margin: 0.5em 0 !important;
+  padding-left: 1.5em !important;
+}
+
+.ck-content li {
+  margin: 0.25em 0 !important;
+}
+
+/* Link styles */
+.ck-content a {
+  color: #2563eb !important;
+  text-decoration: underline !important;
+}
+
+.ck-content a:hover {
+  color: #1d4ed8 !important;
+}
+
+/* Quote styles */
+.ck-content blockquote {
+  border-left: 4px solid #d1d5db !important;
+  padding-left: 1em !important;
+  margin: 1em 0 !important;
+  font-style: italic !important;
+  color: #6b7280 !important;
+}
+
+/* Style for rich text content display */
+.slide-content h1 {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #1f2937;
+  margin: 0.5em 0;
+}
+
+.slide-content h2 {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #374151;
+  margin: 0.5em 0;
+}
+
+.slide-content h3 {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #4b5563;
+  margin: 0.5em 0;
+}
+
+.slide-content p {
+  margin: 0.5em 0;
+  line-height: 1.6;
+}
+
+.slide-content strong {
+  font-weight: bold;
+}
+
+.slide-content em {
+  font-style: italic;
+}
+
+.slide-content ul, .slide-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.slide-content li {
+  margin: 0.25em 0;
+}

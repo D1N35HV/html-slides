@@ -1,0 +1,130 @@
+/* PowerPoint-style theme overrides */
+.reveal .slides {
+  text-align: left;
+  overflow: visible !important;
+}
+
+.reveal .slides section {
+  color: #333333;
+  overflow: visible !important;
+}
+
+/* Hide Reveal.js background layer - we render background directly on section */
+.reveal .backgrounds {
+  display: none !important;
+}
+
+/* Allow elements to be positioned outside slide boundaries */
+.reveal {
+  overflow: visible !important;
+}
+
+.reveal .slides section.present {
+  overflow: visible !important;
+}
+
+/* Reset all heading styles to remove Reveal.js defaults */
+.reveal h1,
+.reveal h2,
+.reveal h3,
+.reveal h4,
+.reveal h5,
+.reveal h6 {
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  margin: 0;
+  padding: 0;
+  line-height: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  text-shadow: none;
+  word-wrap: normal;
+  font-family: inherit;
+}
+
+.reveal ul {
+  margin-left: 1em;
+}
+
+.reveal li {
+  margin: 0.5em 0;
+}
+
+.reveal p {
+  margin: 0 !important;
+  line-height: 1;
+  color: #4a5568;
+}
+
+/* CKEditor overrides */
+.ck-editor__editable_inline {
+  padding: 0 !important;
+}
+
+.inline-editor-container .ck-editor__editable {
+  padding: 0 !important;
+}
+
+/* Default slide background - clean white theme */
+.reveal .slides section {
+  border: none;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  background-color: #ffffff;
+}
+
+/* Image overrides - make images fit 100% of their containers */
+.reveal img {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: fill !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  display: block !important;
+  -webkit-user-drag: none !important;
+  -khtml-user-drag: none !important;
+  -moz-user-drag: none !important;
+  -o-user-drag: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+}
+
+/* Video and iframe overrides - make them fill 100% of their containers */
+.reveal video,
+.reveal iframe {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border: none !important;
+  margin: 0 !important;
+  display: block !important;
+}
+
+/* Ensure draggable elements can move outside slide boundaries */
+.reveal .slides section .content-area {
+  position: relative;
+  z-index: 10;
+}
+
+/* Remove any potential clipping from the reveal viewport */
+.reveal .slides section,
+.reveal .slides section.present,
+.reveal .slides section.future,
+.reveal .slides section.past {
+  clip: none !important;
+  clip-path: none !important;
+}
+
+/* Presentation Mode Overrides - enforce clipping */
+.presentation-mode .reveal,
+.presentation-mode .reveal .slides,
+.presentation-mode .reveal .slides section {
+  overflow: hidden !important;
+}
