@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store/index';
 import { Slide, SlideElement } from '../store/sliceTypes';
+import { useThumbnailStore } from '../store/useThumbnailStore';
+import collaborationService from '../services/CollaborationService';
+import { resolveMediaUrl } from '../lib/utils';
 
 interface SlideStripProps {
   className?: string;
@@ -12,6 +15,14 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
   const [showContextMenu, setShowContextMenu] = useState<{ index: number; x: number; y: number } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const { thumbnails, setThumbnail } = useThumbnailStore();
+
+  // Listen for thumbnail updates from server
+  useEffect(() => {
+    collaborationService.onThumbnailUpdate(({ slideId, thumbnailUrl }) => {
+      setThumbnail(slideId, thumbnailUrl);
+    });
+  }, [setThumbnail]);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -33,7 +44,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
       const container = scrollContainerRef.current;
       const slideElements = container.querySelectorAll('[data-slide-index]');
       const currentSlideElement = slideElements[currentSlide];
-      
+
       if (currentSlideElement) {
         currentSlideElement.scrollIntoView({
           behavior: 'smooth',
@@ -66,7 +77,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
         id: `${element.id}-copy-${Date.now()}`
       }))
     };
-    
+
     // Use addSlide instead of manual array manipulation
     addSlide();
     setShowContextMenu(null);
@@ -81,7 +92,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
 
   const renderSlidePreview = (slide: Slide, index: number) => {
     const isActive = index === currentSlide;
-    
+
     return (
       <div
         key={slide.id}
@@ -95,48 +106,64 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
       >
         <div className="w-20 h-14 bg-white border border-gray-300 rounded shadow-sm overflow-hidden relative">
           {/* Slide preview background */}
-          <div className="w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 relative">
-            {/* Render simplified preview of slide elements */}
-            {slide.elements.slice(0, 3).map((element, elIndex) => (
-              <div
-                key={element.id}
-                className="absolute"
-                style={{
-                  left: `${(element.position.x / 1920) * 100}%`,
-                  top: `${(element.position.y / 1080) * 100}%`,
-                  width: `${Math.min((element.size.width / 1920) * 100, 30)}%`,
-                  height: `${Math.min((element.size.height / 1080) * 100, 25)}%`,
-                  zIndex: element.zIndex || 1
-                }}
-              >
-                {(element.type === 'text' || element.type === 'heading') ? (
-                  <div className="w-full h-full bg-blue-200 rounded-sm opacity-70" />
-                ) : element.type === 'image' ? (
-                  <div className="w-full h-full bg-green-200 rounded-sm opacity-70" />
-                ) : element.type === 'shape' ? (
-                  <div className="w-full h-full bg-purple-200 rounded-sm opacity-70" />
-                ) : element.type === 'video' ? (
-                  <div className="w-full h-full bg-red-200 rounded-sm opacity-70" />
-                ) : (
-                  <div className="w-full h-full bg-gray-200 rounded-sm opacity-70" />
+          <div
+            className="w-full h-full relative"
+            style={{
+              backgroundColor: slide.backgroundColor || '#ffffff'
+            }}
+          >
+            {/* Use server-rendered thumbnail if available */}
+            {thumbnails[slide.id] ? (
+              <img
+                src={resolveMediaUrl(thumbnails[slide.id])}
+                alt={`Slide ${index + 1}`}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              /* Fallback: Render simplified preview of slide elements */
+              <>
+                {slide.elements.slice(0, 3).map((element, elIndex) => (
+                  <div
+                    key={element.id}
+                    className="absolute"
+                    style={{
+                      left: `${(element.position.x / 1920) * 100}%`,
+                      top: `${(element.position.y / 1080) * 100}%`,
+                      width: `${Math.min((element.size.width / 1920) * 100, 30)}%`,
+                      height: `${Math.min((element.size.height / 1080) * 100, 25)}%`,
+                      zIndex: element.zIndex || 1
+                    }}
+                  >
+                    {(element.type === 'text' || element.type === 'heading') ? (
+                      <div className="w-full h-full bg-blue-200 rounded-sm opacity-70" />
+                    ) : element.type === 'image' ? (
+                      <div className="w-full h-full bg-green-200 rounded-sm opacity-70" />
+                    ) : element.type === 'shape' ? (
+                      <div className="w-full h-full bg-purple-200 rounded-sm opacity-70" />
+                    ) : element.type === 'video' ? (
+                      <div className="w-full h-full bg-red-200 rounded-sm opacity-70" />
+                    ) : (
+                      <div className="w-full h-full bg-gray-200 rounded-sm opacity-70" />
+                    )}
+                  </div>
+                ))}
+
+                {/* Show "+" indicator if there are more elements */}
+                {slide.elements.length > 3 && (
+                  <div className="absolute bottom-1 right-1 w-3 h-3 bg-gray-400 rounded-full flex items-center justify-center">
+                    <span className="text-xs text-white font-bold">+</span>
+                  </div>
                 )}
-              </div>
-            ))}
-            
-            {/* Show "+" indicator if there are more elements */}
-            {slide.elements.length > 3 && (
-              <div className="absolute bottom-1 right-1 w-3 h-3 bg-gray-400 rounded-full flex items-center justify-center">
-                <span className="text-xs text-white font-bold">+</span>
-              </div>
+              </>
             )}
           </div>
-          
+
           {/* Active slide indicator */}
           {isActive && (
             <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full border-2 border-white" />
           )}
         </div>
-        
+
         {/* Hover overlay */}
         <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 rounded" />
       </div>
@@ -148,10 +175,10 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
       {/* Main slide strip container */}
       <div className="h-16 flex items-center px-4 gap-3">
         {/* Slides container with horizontal scrollbar */}
-        <div 
+        <div
           ref={scrollContainerRef}
           className="overflow-x-auto overflow-y-hidden slide-scroller max-w-full scrollbar-hide"
-          style={{ 
+          style={{
             flex: '1 1 0%',
             scrollbarWidth: 'none',
             msOverflowStyle: 'none'
@@ -167,7 +194,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
             {slides.map((slide, index) => renderSlidePreview(slide, index))}
           </div>
         </div>
-        
+
         {/* Add new slide button - outside scroller */}
         <button
           onClick={() => addSlide()}
@@ -181,7 +208,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
           </div>
         </button>
       </div>
-      
+
       {/* Navigation bar below thumbnails */}
       <div className="h-8 bg-gray-50 border-t border-gray-200 flex items-center justify-between px-4">
         {/* Navigation buttons */}
@@ -196,7 +223,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          
+
           <button
             onClick={() => setCurrentSlide(Math.min(slides.length - 1, currentSlide + 1))}
             disabled={currentSlide === slides.length - 1}
@@ -208,7 +235,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
             </svg>
           </button>
         </div>
-        
+
         {/* Slide counter */}
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -219,7 +246,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
           <span>{slides.length}</span>
         </div>
       </div>
-      
+
       {/* Context menu */}
       {showContextMenu && (
         <div
@@ -239,7 +266,7 @@ export const SlideStrip: React.FC<SlideStripProps> = ({ className = '' }) => {
             </svg>
             Duplicate
           </button>
-          
+
           {slides.length > 1 && (
             <button
               onClick={() => handleDeleteSlide(showContextMenu.index)}

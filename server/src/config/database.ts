@@ -24,7 +24,14 @@ const config: Config = {
   mongoUri: process.env['MONGODB_URI'] || 'mongodb://localhost:27017/slidesdb',
   jwtSecret: process.env['JWT_SECRET'] || 'your-super-secret-jwt-key',
   jwtExpiresIn: process.env['JWT_EXPIRES_IN'] || '7d',
-  corsOrigins: process.env['CORS_ORIGINS']?.split(',') || ['http://localhost:3000', 'http://localhost:5173'],
+  corsOrigins: process.env['CORS_ORIGINS']?.split(',') || [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5174'
+  ],
   rateLimitWindowMs: parseInt(process.env['RATE_LIMIT_WINDOW_MS'] || '900000'),
   rateLimitMaxRequests: parseInt(process.env['RATE_LIMIT_MAX_REQUESTS'] || '100'),
   rateLimitDisabled: process.env['RATE_LIMIT_DISABLED'] === '1' || (process.env['NODE_ENV'] || 'development') === 'development',

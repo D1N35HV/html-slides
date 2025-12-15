@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import Presentation from '../models/Presentation';
 import { Types } from 'mongoose';
 import { ElementPatch, PresentationPatch, SlidePatch } from '../types/collaboration';
+import thumbnailService from '../services/ThumbnailService';
 
 interface AuthUser { id: string; name?: string; email?: string; }
 
@@ -97,6 +98,22 @@ export class CollaborationServer {
           this.persistRoomDebounced(presentationId);
           this.io.to(presentationId).except(socket.id).emit('remote_patch', { ...patch, serverVersion: room.version });
           ack({ ok: true, serverVersion: room.version });
+
+          // Trigger thumbnail regeneration for the changed slide
+          const slideId = 'slideId' in patch ? patch.slideId : null;
+          if (slideId) {
+            const slide = room.slides.find(s => s.id === slideId);
+            if (slide) {
+              thumbnailService.queueThumbnailGeneration(
+                slideId,
+                slide,
+                (thumbnailUrl) => {
+                  this.emitThumbnailUpdate(presentationId, slideId, thumbnailUrl);
+                },
+                presentationId
+              );
+            }
+          }
         } else {
           ack({ ok: false, serverVersion: room.version });
         }
@@ -206,6 +223,13 @@ export class CollaborationServer {
    */
   getIO() {
     return this.io;
+  }
+
+  /**
+   * Emit thumbnail update to all users in a presentation room
+   */
+  emitThumbnailUpdate(presentationId: string, slideId: string, thumbnailUrl: string) {
+    this.io.to(presentationId).emit('thumbnail_updated', { slideId, thumbnailUrl });
   }
 }
 

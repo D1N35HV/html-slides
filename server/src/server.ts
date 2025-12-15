@@ -13,6 +13,7 @@ import uploadRoutes from './routes/uploadRoutes';
 import templateRoutes from './routes/templateRoutes';
 import { errorHandler, notFoundHandler } from './middleware/errorMiddleware';
 import CollaborationServer from './realtime/CollaborationServer';
+import thumbnailService from './services/ThumbnailService';
 
 class Server {
   private app: express.Application;
@@ -74,6 +75,7 @@ class Server {
 
     // Static files
     this.app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+    this.app.use('/thumbnails', express.static(path.join(__dirname, '../uploads/thumbnails')));
 
     // Health check endpoint
     this.app.get('/health', (_req: Request, res: Response) => {
@@ -134,6 +136,10 @@ class Server {
       const collaborationServer = new CollaborationServer(server, config.corsOrigins);
       this.app.set('collaborationServer', collaborationServer);
       console.log('🧩 Real-time collaboration enabled.');
+
+      // Initialize thumbnail service (Puppeteer browser)
+      await thumbnailService.initialize();
+      console.log('🖼️ Thumbnail service initialized.');
 
       // Graceful shutdown
       const gracefulShutdown = async (signal: string) => {

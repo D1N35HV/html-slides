@@ -12,7 +12,13 @@ class CollaborationService {
   private presentationId: string | null = null;
   private version = 0;
   private token: string | null = null;
-  private listeners: { remote_patch: ((p: any) => void)[]; presence: ((p: any) => void)[]; cursor_update: ((p: any) => void)[]; ppt_progress: ((p: any) => void)[] } = { remote_patch: [], presence: [], cursor_update: [], ppt_progress: [] };
+  private listeners: {
+    remote_patch: ((p: any) => void)[];
+    presence: ((p: any) => void)[];
+    cursor_update: ((p: any) => void)[];
+    ppt_progress: ((p: any) => void)[];
+    thumbnail_update: ((p: { slideId: string; thumbnailUrl: string }) => void)[];
+  } = { remote_patch: [], presence: [], cursor_update: [], ppt_progress: [], thumbnail_update: [] };
 
   onInitialState(cb: (data: { slides: any[]; version: number }) => void) {
     if (this.socket) {
@@ -36,6 +42,7 @@ class CollaborationService {
     this.socket.on('presence', (data) => this.listeners.presence.forEach(l => l(data)));
     this.socket.on('cursor_update', (data) => this.listeners.cursor_update.forEach(l => l(data)));
     this.socket.on('ppt_conversion_progress', (data) => this.listeners.ppt_progress.forEach(l => l(data)));
+    this.socket.on('thumbnail_updated', (data) => this.listeners.thumbnail_update.forEach(l => l(data)));
   }
 
   joinPresentation(presentationId: string) {
@@ -54,6 +61,14 @@ class CollaborationService {
   onRemotePatch(cb: (patch: any) => void) { this.listeners.remote_patch.push(cb); }
   onPresence(cb: (presence: any) => void) { this.listeners.presence.push(cb); }
   onCursor(cb: (cursor: any) => void) { this.listeners.cursor_update.push(cb); }
+
+  /**
+   * Listen for thumbnail update events
+   * Triggered when server generates new slide thumbnails
+   */
+  onThumbnailUpdate(cb: (event: { slideId: string; thumbnailUrl: string }) => void) {
+    this.listeners.thumbnail_update.push(cb);
+  }
 
   /**
    * Listen for PPT conversion progress events
