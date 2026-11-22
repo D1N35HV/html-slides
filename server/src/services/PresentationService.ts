@@ -73,10 +73,17 @@ class PresentationService {
       Presentation.countDocuments(searchQuery)
     ]);
 
+    // Add thumbnailUrl from first slide and slideCount for dashboard cards
+    const transformedPresentations = presentations.map((p: any) => ({
+      ...p,
+      slideCount: p.slides?.length || 0,
+      thumbnailUrl: p.slides?.[0]?.thumbnailUrl || null
+    }));
+
     const totalPages = Math.ceil(total / limit);
 
     return {
-      presentations: presentations as IPresentation[],
+      presentations: transformedPresentations as IPresentation[],
       total,
       currentPage: page,
       totalPages,
@@ -123,10 +130,17 @@ class PresentationService {
       Presentation.countDocuments(searchQuery)
     ]);
 
+    // Add thumbnailUrl from first slide and slideCount for dashboard cards
+    const transformedPresentations = presentations.map((p: any) => ({
+      ...p,
+      slideCount: p.slides?.length || 0,
+      thumbnailUrl: p.slides?.[0]?.thumbnailUrl || null
+    }));
+
     const totalPages = Math.ceil(total / limit);
 
     return {
-      presentations: presentations as IPresentation[],
+      presentations: transformedPresentations as IPresentation[],
       total,
       currentPage: page,
       totalPages,
@@ -148,7 +162,7 @@ class PresentationService {
       .populate('createdBy', 'name email avatar')
       .populate('collaborators', 'name email avatar')
       .lean();
-
+    console.log(presentation);
     if (!presentation) {
       return null;
     }
@@ -196,25 +210,41 @@ class PresentationService {
       return null;
     }
 
-    // Check if user has permission to update
-    const presentation = await Presentation.findOne({
-      _id: presentationId,
-      $or: [
-        { createdBy: userId },
-        { collaborators: userId }
-      ]
-    });
+    // Strip fields the client must not control; version/lastModified are managed here
+    const {
+      version: _v,
+      createdBy: _cb,
+      _id: _id,
+      __v: _vk,
+      createdAt: _ca,
+      updatedAt: _ua,
+      lastModified: _lm,
+      ...safeUpdate
+    } = updateData as any;
 
-    if (!presentation) {
-      return null;
+    // Ensure slide order is consistent (the pre-save hook doesn't run on findOneAndUpdate)
+    if (Array.isArray(safeUpdate.slides)) {
+      safeUpdate.slides = safeUpdate.slides.map((slide: any, index: number) => ({
+        ...slide,
+        order: index
+      }));
     }
 
-    // Update the presentation
-    Object.assign(presentation, updateData);
-    presentation.version += 1;
-    presentation.lastModified = new Date();
-
-    return await presentation.save();
+    // Atomic update avoids the __v race between autosave, manual save, and realtime persist
+    return await Presentation.findOneAndUpdate(
+      {
+        _id: presentationId,
+        $or: [
+          { createdBy: userId },
+          { collaborators: userId }
+        ]
+      },
+      {
+        $set: { ...safeUpdate, lastModified: new Date() },
+        $inc: { version: 1 }
+      },
+      { new: true, runValidators: true }
+    );
   }
 
   // Delete a presentation
@@ -240,7 +270,7 @@ class PresentationService {
     userId: Types.ObjectId
   ): Promise<IPresentation | null> {
     const originalPresentation = await this.getPresentationById(presentationId, userId);
-    
+
     if (!originalPresentation) {
       return null;
     }
@@ -318,8 +348,8 @@ class PresentationService {
       return null;
     }
 
-  (presentation as any).collaborators = (presentation.collaborators || []).filter((id: Types.ObjectId) => !id.equals(collaboratorId));
-  await presentation.save();
+    (presentation as any).collaborators = (presentation.collaborators || []).filter((id: Types.ObjectId) => !id.equals(collaboratorId));
+    await presentation.save();
 
     return await Presentation.findById(presentationId)
       .populate('createdBy', 'name email avatar')

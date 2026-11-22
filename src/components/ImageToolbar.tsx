@@ -1,83 +1,139 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useStore } from '../store';
-import { 
-  Crop, 
-  FlipHorizontal, 
-  FlipVertical, 
-  Edit3, 
+import { useCropModeStore } from '../store/useCropModeStore';
+import {
+  Crop,
+  FlipHorizontal,
+  FlipVertical,
+  Edit3,
   SlidersHorizontal,
   RotateCcw,
   Maximize2,
-  Image as ImageIcon
+  Image as ImageIcon,
+  X,
+  Check
 } from 'lucide-react';
+import { resolveMediaUrl } from '../lib/utils';
 
 interface ImageToolbarProps {
   elementId: string;
 }
 
 export const ImageToolbar: React.FC<ImageToolbarProps> = ({ elementId }) => {
-  const { slides, currentSlide, updateImageElement } = useStore();
+  const element = useStore((s) => s.slides[s.currentSlide]?.elements.find(el => el.id === elementId));
+  const { cropModeElementId, setCropModeElementId } = useCropModeStore();
   const [showOpacitySlider, setShowOpacitySlider] = useState(false);
-  
-  const element = slides[currentSlide]?.elements.find(el => el.id === elementId);
-  
+
+  const isCropMode = cropModeElementId === elementId;
+
   if (!element || element.type !== 'image') return null;
+
+  // Apply an image update to every image in the current multi-selection.
+  // Falls back to the primary element when nothing else is selected.
+  const applyToAllSelectedImages = (updates: Record<string, any>) => {
+    const store: any = useStore.getState();
+    const slide = store.slides[store.currentSlide];
+    const selectedIds: string[] = store.selectedElementIds || [];
+    const imageIds = selectedIds.filter((id) => {
+      const el = slide?.elements?.find((e: any) => e.id === id);
+      return el?.type === 'image';
+    });
+    const targetIds = imageIds.length > 0 ? imageIds : [elementId];
+    targetIds.forEach((id) => store.updateImageElement(id, updates));
+  };
 
   const imageElement = element as any;
   const opacity = imageElement.opacity ?? 1;
   const flipX = imageElement.flipX ?? false;
   const flipY = imageElement.flipY ?? false;
   const objectFit = imageElement.objectFit ?? 'cover';
+  const cropX = imageElement.cropX ?? 0;
+  const cropY = imageElement.cropY ?? 0;
+  const cropWidth = imageElement.cropWidth ?? 100;
+  const cropHeight = imageElement.cropHeight ?? 100;
+
+  const hasCrop = cropX !== 0 || cropY !== 0 || cropWidth !== 100 || cropHeight !== 100;
 
   const handleFlipHorizontal = () => {
-    updateImageElement(elementId, { flipX: !flipX });
+    applyToAllSelectedImages({ flipX: !flipX });
   };
 
   const handleFlipVertical = () => {
-    updateImageElement(elementId, { flipY: !flipY });
+    applyToAllSelectedImages({ flipY: !flipY });
   };
 
   const handleOpacityChange = (value: number) => {
-    updateImageElement(elementId, { opacity: value });
+    applyToAllSelectedImages({ opacity: value });
   };
 
   const handleObjectFitChange = (fit: 'fill' | 'cover' | 'contain' | 'scale-down' | 'none') => {
-    updateImageElement(elementId, { objectFit: fit });
+    applyToAllSelectedImages({ objectFit: fit });
   };
 
   const handleResetTransforms = () => {
-    updateImageElement(elementId, { 
-      flipX: false, 
-      flipY: false, 
+    applyToAllSelectedImages({
+      flipX: false,
+      flipY: false,
       opacity: 1,
-      objectFit: 'cover'
+      objectFit: 'cover',
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 100,
+      cropHeight: 100
     });
   };
 
+  const handleStartCrop = () => {
+    setCropModeElementId(elementId);
+  };
+
+  // If in crop mode, render crop toolbar instead
+  if (isCropMode) {
+    return (
+      <div
+        className="image-toolbar fixed top-[72px] z-50 bg-purple-600 text-white rounded-lg shadow-lg border border-purple-700 flex items-center gap-3 px-4 py-2"
+        style={{
+          left: 'calc(320px + (100vw - 320px) / 2)',
+          transform: 'translateX(-50%)'
+        }}
+      >
+        <Crop className="w-4 h-4" />
+        <span className="font-medium">Crop Mode</span>
+        <span className="text-purple-200 text-sm">Drag handles to adjust • Enter to apply • Esc to cancel</span>
+      </div>
+    );
+  }
+
   return (
-    <div 
+    <div
       className="image-toolbar fixed top-[72px] z-50 bg-white rounded-lg shadow-lg border border-gray-200 flex items-center gap-2 px-4 py-2"
       style={{
         left: 'calc(320px + (100vw - 320px) / 2)',
         transform: 'translateX(-50%)'
       }}
-      onMouseDown={(e) => e.preventDefault()}
+      // Keep interactions contained to the toolbar so they can't bubble to
+      // slide-level handlers and clear the multi-selection. preventDefault on
+      // mousedown also avoids native focus changes that would blur the canvas.
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onClick={(e) => e.stopPropagation()}
     >
-      {/* Crop - placeholder for future functionality */}
-      <button 
-        className="p-1.5 hover:bg-gray-100 rounded flex items-center gap-1 text-sm"
-        title="Crop Image (Coming Soon)"
-        disabled
+      {/* Crop */}
+      <button
+        className={`p-1.5 hover:bg-gray-100 rounded flex items-center gap-1 text-sm ${hasCrop ? 'bg-purple-100 text-purple-700' : ''}`}
+        title="Crop Image"
+        onClick={handleStartCrop}
+        disabled={!imageElement.imageUrl}
       >
-        <Crop className="w-4 h-4 text-gray-400" />
-        <span className="text-gray-400">Crop</span>
+        <Crop className={`w-4 h-4 ${!imageElement.imageUrl ? 'text-gray-400' : ''}`} />
+        <span className={!imageElement.imageUrl ? 'text-gray-400' : ''}>Crop</span>
       </button>
 
       <div className="w-px h-6 bg-gray-200 mx-1" />
 
       {/* Transparency/Opacity */}
       <div className="relative">
-        <button 
+        <button
           className={`p-1.5 hover:bg-gray-100 rounded flex items-center gap-1 text-sm ${showOpacitySlider ? 'bg-gray-100' : ''}`}
           onClick={() => setShowOpacitySlider(!showOpacitySlider)}
           title="Transparency"
@@ -86,24 +142,27 @@ export const ImageToolbar: React.FC<ImageToolbarProps> = ({ elementId }) => {
           <span>Opacity</span>
           <span className="text-xs text-gray-500 ml-1">{Math.round(opacity * 100)}%</span>
         </button>
-        
+
         {showOpacitySlider && (
-          <div 
-            className="absolute top-full left-0 mt-2 p-3 bg-white rounded-lg shadow-lg border border-gray-200 w-48 z-50"
+          <div
+            className="absolute top-full left-0 mt-2 z-50"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-gray-600">Opacity</span>
-              <span className="text-sm font-medium">{Math.round(opacity * 100)}%</span>
+            <div className="lp-root tb-popover tb-slider-row" style={{ width: 220 }}>
+              <div className="tb-slider-head">
+                <span className="tb-label">Opacity</span>
+                <span className="tb-slider-value">{Math.round(opacity * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(opacity * 100)}
+                onChange={(e) => handleOpacityChange(parseInt(e.target.value, 10) / 100)}
+                className="tb-slider"
+                aria-label="Opacity"
+              />
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={opacity * 100}
-              onChange={(e) => handleOpacityChange(parseInt(e.target.value) / 100)}
-              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-            />
           </div>
         )}
       </div>
@@ -112,21 +171,21 @@ export const ImageToolbar: React.FC<ImageToolbarProps> = ({ elementId }) => {
 
       {/* Edit/Fit Options */}
       <div className="flex items-center gap-1">
-        <button 
+        <button
           className={`p-1.5 rounded text-sm ${objectFit === 'cover' ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-100'}`}
           onClick={() => handleObjectFitChange('cover')}
           title="Cover - Fill container"
         >
           <Maximize2 className="w-4 h-4" />
         </button>
-        <button 
+        <button
           className={`p-1.5 rounded text-sm ${objectFit === 'contain' ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-100'}`}
           onClick={() => handleObjectFitChange('contain')}
           title="Contain - Fit inside"
         >
           <ImageIcon className="w-4 h-4" />
         </button>
-        <button 
+        <button
           className={`p-1.5 rounded text-sm ${objectFit === 'fill' ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-100'}`}
           onClick={() => handleObjectFitChange('fill')}
           title="Fill - Stretch to fit"
@@ -139,14 +198,14 @@ export const ImageToolbar: React.FC<ImageToolbarProps> = ({ elementId }) => {
 
       {/* Flip Options */}
       <div className="flex items-center gap-1">
-        <button 
+        <button
           className={`p-1.5 rounded ${flipX ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-100'}`}
           onClick={handleFlipHorizontal}
           title="Flip Horizontal"
         >
           <FlipHorizontal className="w-4 h-4" />
         </button>
-        <button 
+        <button
           className={`p-1.5 rounded ${flipY ? 'bg-purple-100 text-purple-700' : 'hover:bg-gray-100'}`}
           onClick={handleFlipVertical}
           title="Flip Vertical"
@@ -158,7 +217,7 @@ export const ImageToolbar: React.FC<ImageToolbarProps> = ({ elementId }) => {
       <div className="w-px h-6 bg-gray-200 mx-1" />
 
       {/* Reset */}
-      <button 
+      <button
         className="p-1.5 hover:bg-gray-100 rounded flex items-center gap-1 text-sm"
         onClick={handleResetTransforms}
         title="Reset to Default"

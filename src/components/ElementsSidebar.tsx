@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { HexColorPicker, HexColorInput } from 'react-colorful';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/index';
 import { useLayoutStore } from '../store/layoutStore';
-import type { CreateTextElement, CreateHeadingElement, CreateImageElement, CreateVideoElement, CreateShapeElement } from '../store/sliceTypes';
+import type { CreateTextElement, CreateHeadingElement, CreateImageElement, CreateVideoElement, CreateShapeElement, CreateChartElement, ChartType } from '../store/sliceTypes';
+import { ChartElement } from './ChartElement';
+import { ChartEditorPanel } from './ChartEditorPanel';
+import { defaultChartElementProps } from '../utils/chartPalette';
 import apiService from '../services/ApiService';
 import collaborationService from '../services/CollaborationService';
-import { ShapePreview } from './ShapeElement';
+import { ShapeRenderer, SHAPE_NAMES, isLineShape, type ShapeType } from './ShapeElement';
 import {
   DocumentTextIcon,
   HashtagIcon,
@@ -14,9 +16,6 @@ import {
   RectangleStackIcon,
   PlusIcon,
   PaintBrushIcon,
-  EyeDropperIcon,
-  AdjustmentsHorizontalIcon,
-  TrashIcon,
   Squares2X2Icon,
   SwatchIcon,
   MagnifyingGlassIcon,
@@ -28,9 +27,142 @@ import {
   XMarkIcon,
   DocumentArrowUpIcon,
   ChevronLeftIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { SaveButton } from './SaveButton';
+import { ColorPicker } from './ui/ColorPicker';
+import { PositionPanel } from './ui/PositionPanel';
+import { extractDocumentColors } from '../utils/documentColors';
+
+// Ink-indigo brand colors for shape previews — hex for SVG fill reliability.
+const SHAPE_FILL = '#4248b2';      // ink-indigo body
+const SHAPE_STROKE = '#2f3383';    // ink-indigo edge
+
+// ──────────────────────────────────────────────
+// Element library — shelves, drill-in, cross-category search
+// ──────────────────────────────────────────────
+
+type ShapeItem = {
+  kind: 'shape';
+  id: string;
+  shapeType: ShapeType;
+  name: string;
+  keywords: string[];
+};
+
+type IconItem = {
+  kind: 'icon';
+  id: string;
+  name: string;
+  /** Heroicons outline path(s), 24×24 viewbox. Stroke handled at render time. */
+  path: string;
+  keywords: string[];
+};
+
+type ElementItem = ShapeItem | IconItem;
+
+type ElementCategory = {
+  id: string;
+  name: string;
+  items: ElementItem[];
+};
+
+/** Keep peek rows to one visual line (3-col grid). */
+const SHELF_PEEK = 3;
+
+const HERO_ICONS: IconItem[] = [
+  { kind: 'icon', id: 'check', name: 'Check', keywords: ['correct', 'done', 'complete', 'yes'],
+    path: 'M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { kind: 'icon', id: 'cross', name: 'Cross', keywords: ['incorrect', 'wrong', 'no', 'remove'],
+    path: 'M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { kind: 'icon', id: 'info', name: 'Info', keywords: ['note', 'tip', 'help'],
+    path: 'M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z' },
+  { kind: 'icon', id: 'idea', name: 'Idea', keywords: ['bulb', 'light', 'tip', 'insight'],
+    path: 'M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18' },
+  { kind: 'icon', id: 'education', name: 'Education', keywords: ['cap', 'graduate', 'school', 'learn'],
+    path: 'M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.62 48.62 0 0112 20.904a48.62 48.62 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5' },
+  { kind: 'icon', id: 'book', name: 'Book', keywords: ['read', 'reference', 'material'],
+    path: 'M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25' },
+  { kind: 'icon', id: 'assessment', name: 'Assessment', keywords: ['clipboard', 'task', 'checklist', 'quiz'],
+    path: 'M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z' },
+  { kind: 'icon', id: 'data', name: 'Data', keywords: ['chart', 'metric', 'graph', 'bar'],
+    path: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z' },
+  { kind: 'icon', id: 'warning', name: 'Warning', keywords: ['alert', 'caution', 'attention'],
+    path: 'M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z' },
+  { kind: 'icon', id: 'key-point', name: 'Key point', keywords: ['star', 'highlight', 'important', 'flag'],
+    path: 'M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z' },
+];
+
+const shapeItem = (shapeType: ShapeType, keywords: string[] = []): ShapeItem => ({
+  kind: 'shape',
+  id: shapeType,
+  shapeType,
+  name: SHAPE_NAMES[shapeType],
+  keywords,
+});
+
+const ELEMENT_CATEGORIES: ElementCategory[] = [
+  {
+    id: 'basic',
+    name: 'Basic shapes',
+    items: [
+      shapeItem('rectangle', ['square', 'box']),
+      shapeItem('circle', ['ellipse', 'round']),
+      shapeItem('triangle'),
+      shapeItem('diamond', ['rhombus']),
+      shapeItem('pentagon', ['five']),
+      shapeItem('hexagon', ['six']),
+      shapeItem('parallelogram', ['slanted']),
+    ],
+  },
+  {
+    id: 'symbols',
+    name: 'Symbols',
+    items: [
+      shapeItem('star', ['favorite', 'highlight']),
+      shapeItem('heart', ['love', 'like']),
+      shapeItem('cloud', ['weather', 'storage']),
+    ],
+  },
+  {
+    id: 'lines',
+    name: 'Lines',
+    items: [
+      shapeItem('line', ['horizontal', 'rule', 'separator', 'divider']),
+      shapeItem('line-arrow-right', ['arrow', 'pointer', 'connector', 'direction']),
+      shapeItem('line-arrow-double', ['arrow', 'bidirectional', 'two-way', 'range']),
+    ],
+  },
+  {
+    id: 'flow',
+    name: 'Flow & callout',
+    items: [
+      shapeItem('arrow', ['direction', 'point']),
+      shapeItem('callout', ['speech', 'bubble', 'quote']),
+    ],
+  },
+  {
+    id: 'icons',
+    name: 'Learning icons',
+    items: HERO_ICONS,
+  },
+];
+
+// Charts picker — order chosen so the grid reads as comparison → trend →
+// composition → share. Each tile renders a live recharts mini-preview, so
+// users see the actual visual at insert time rather than an icon stand-in.
+const CHART_TYPES: ReadonlyArray<{ id: ChartType; label: string }> = [
+  { id: 'bar',  label: 'Bar' },
+  { id: 'line', label: 'Line' },
+  { id: 'area', label: 'Area' },
+  { id: 'pie',  label: 'Pie' },
+];
+
+/** Build a data-URL SVG for an icon so it can drop onto the canvas as an image element. */
+function iconToDataUrl(icon: IconItem, strokeHex = '#1a1d2b'): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${strokeHex}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="120" height="120"><path d="${icon.path}"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
 
 // Upload type for files
 interface UploadedFile {
@@ -52,6 +184,7 @@ interface Template {
     elements: any[];
     backgroundColor?: string;
     backgroundImage?: string;
+    thumbnailUrl?: string;
   }>;
   slideCount: number;
   createdAt: string;
@@ -59,408 +192,360 @@ interface Template {
   mediaFolder: string;
 }
 
-// Font Color Section Component with Color Picker
-interface FontColorSectionProps {
-  colors: string[];
+// ──────────────────────────────────────────────
+// Color sub-panels
+// ──────────────────────────────────────────────
+
+interface TextColorSectionProps {
   editorCallbacks: {
     onFontColorChange?: (color: string) => void;
-  };
-}
-
-function FontColorSection({ colors, editorCallbacks }: FontColorSectionProps) {
-  const [customColor, setCustomColor] = useState('#6366f1');
-  const [showColorPicker, setShowColorPicker] = useState(false);
-  const [recentColors, setRecentColors] = useState<string[]>([]);
-
-  const handleCustomColorApply = () => {
-    editorCallbacks.onFontColorChange?.(customColor);
-    // Add to recent colors if not already present
-    if (!recentColors.includes(customColor)) {
-      setRecentColors(prev => [customColor, ...prev.slice(0, 4)]);
-    }
-  };
-
-  const handlePresetColorClick = (color: string) => {
-    editorCallbacks.onFontColorChange?.(color);
-  };
-
-  return (
-    <div className="p-4">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Text Color</h3>
-
-      {/* Preset Colors Grid */}
-      <div className="grid grid-cols-5 gap-2 mb-4">
-        {colors.map(color => (
-          <button
-            key={color}
-            className="w-8 h-8 rounded-full border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-            style={{ backgroundColor: color }}
-            onClick={() => handlePresetColorClick(color)}
-            title={color}
-          />
-        ))}
-      </div>
-
-      {/* Recent Colors */}
-      {recentColors.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-500 mb-2">Recent Colors</h4>
-          <div className="flex gap-2">
-            {recentColors.map((color, idx) => (
-              <button
-                key={`recent-${idx}`}
-                className="w-7 h-7 rounded-full border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-                style={{ backgroundColor: color }}
-                onClick={() => handlePresetColorClick(color)}
-                title={color}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Custom Color Section */}
-      <div className="mt-4 border-t border-gray-200 pt-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3">Custom Color</h3>
-
-        <div className="flex items-center gap-3 mb-3">
-          <button
-            className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-purple-400 transition-colors shadow-sm"
-            style={{ backgroundColor: customColor }}
-            onClick={() => setShowColorPicker(!showColorPicker)}
-            title="Click to open color picker"
-          />
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">#</span>
-              <HexColorInput
-                color={customColor}
-                onChange={setCustomColor}
-                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent uppercase"
-                prefixed={false}
-              />
-            </div>
-          </div>
-          <button
-            onClick={handleCustomColorApply}
-            className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition-colors"
-          >
-            Apply
-          </button>
-        </div>
-
-        {/* Color Picker */}
-        {showColorPicker && (
-          <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <HexColorPicker
-              color={customColor}
-              onChange={setCustomColor}
-              style={{ width: '100%', height: '160px' }}
-            />
-            <div className="mt-3 flex justify-between items-center">
-              <span className="text-xs text-gray-500">Selected: {customColor}</span>
-              <button
-                onClick={() => setShowColorPicker(false)}
-                className="text-xs text-gray-500 hover:text-gray-700"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Background Color Section Component with Color Picker
-interface BgColorSectionProps {
-  colors: string[];
-  editorCallbacks: {
     onBgColorChange?: (color: string) => void;
-  };
-}
-
-function BgColorSection({ colors, editorCallbacks }: BgColorSectionProps) {
-  const [customColor, setCustomColor] = useState('#ffff00');
-  const [showColorPicker, setShowColorPicker] = useState(false);
-  const [recentColors, setRecentColors] = useState<string[]>([]);
-
-  // Highlight-friendly colors
-  const highlightColors = [
-    '#ffff00', '#00ff00', '#00ffff', '#ff00ff', '#ff6600',
-    '#ff9999', '#99ff99', '#9999ff', '#ffcc00', '#ff99cc',
-    '#ccff00', '#00ccff', '#cc99ff', '#ffcc99', '#99ccff',
-    'transparent'
-  ];
-
-  const handleCustomColorApply = () => {
-    editorCallbacks.onBgColorChange?.(customColor);
-    if (!recentColors.includes(customColor)) {
-      setRecentColors(prev => [customColor, ...prev.slice(0, 4)]);
-    }
-  };
-
-  const handlePresetColorClick = (color: string) => {
-    editorCallbacks.onBgColorChange?.(color);
-  };
-
-  const handleRemoveHighlight = () => {
-    editorCallbacks.onBgColorChange?.('transparent');
-  };
-
-  return (
-    <div className="p-4">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Text Background / Highlight</h3>
-
-      {/* Remove Highlight Button */}
-      <button
-        onClick={handleRemoveHighlight}
-        className="w-full mb-4 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
-      >
-        <span className="w-4 h-4 border border-gray-300 rounded bg-white relative">
-          <span className="absolute inset-0 flex items-center justify-center text-red-500 text-xs">✕</span>
-        </span>
-        Remove Highlight
-      </button>
-
-      {/* Preset Highlight Colors Grid */}
-      <div className="grid grid-cols-5 gap-2 mb-4">
-        {highlightColors.filter(c => c !== 'transparent').map(color => (
-          <button
-            key={color}
-            className="w-8 h-8 rounded border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-            style={{ backgroundColor: color }}
-            onClick={() => handlePresetColorClick(color)}
-            title={color}
-          />
-        ))}
-      </div>
-
-      {/* Recent Colors */}
-      {recentColors.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-500 mb-2">Recent Colors</h4>
-          <div className="flex gap-2">
-            {recentColors.map((color, idx) => (
-              <button
-                key={`recent-bg-${idx}`}
-                className="w-7 h-7 rounded border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-                style={{ backgroundColor: color }}
-                onClick={() => handlePresetColorClick(color)}
-                title={color}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Custom Color Section */}
-      <div className="mt-4 border-t border-gray-200 pt-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3">Custom Color</h3>
-
-        <div className="flex items-center gap-3 mb-3">
-          <button
-            className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-purple-400 transition-colors shadow-sm"
-            style={{ backgroundColor: customColor }}
-            onClick={() => setShowColorPicker(!showColorPicker)}
-            title="Click to open color picker"
-          />
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">#</span>
-              <HexColorInput
-                color={customColor}
-                onChange={setCustomColor}
-                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent uppercase"
-                prefixed={false}
-              />
-            </div>
-          </div>
-          <button
-            onClick={handleCustomColorApply}
-            className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition-colors"
-          >
-            Apply
-          </button>
-        </div>
-
-        {/* Color Picker */}
-        {showColorPicker && (
-          <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <HexColorPicker
-              color={customColor}
-              onChange={setCustomColor}
-              style={{ width: '100%', height: '160px' }}
-            />
-            <div className="mt-3 flex justify-between items-center">
-              <span className="text-xs text-gray-500">Selected: {customColor}</span>
-              <button
-                onClick={() => setShowColorPicker(false)}
-                className="text-xs text-gray-500 hover:text-gray-700"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Element Background Color Section Component with Color Picker
-interface ElementBgColorSectionProps {
-  colors: string[];
-  editorCallbacks: {
     onElementBgColorChange?: (color: string) => void;
   };
 }
 
-function ElementBgColorSection({ colors, editorCallbacks }: ElementBgColorSectionProps) {
-  const [customColor, setCustomColor] = useState('#ffffff');
-  const [showColorPicker, setShowColorPicker] = useState(false);
-  const [recentColors, setRecentColors] = useState<string[]>([]);
+function useDocumentColors() {
+  const slides = useStore((s) => s.slides);
+  return useMemo(() => extractDocumentColors(slides), [slides]);
+}
 
-  // Background-friendly colors (more muted/professional)
-  const bgColors = [
-    '#ffffff', '#f8f9fa', '#e9ecef', '#dee2e6', '#ced4da',
-    '#fff3cd', '#d4edda', '#d1ecf1', '#cce5ff', '#f8d7da',
-    '#ffeaa7', '#dfe6e9', '#fab1a0', '#74b9ff', '#a29bfe',
-    '#00cec9', '#fdcb6e', '#e17055', '#0984e3', '#6c5ce7',
-    'transparent'
-  ];
+function FontColorSection({ editorCallbacks }: TextColorSectionProps) {
+  const documentColors = useDocumentColors();
+  return (
+    <div className="es-section">
+      <ColorPicker
+        onChange={(c) => editorCallbacks.onFontColorChange?.(c)}
+        documentColors={documentColors}
+      />
+    </div>
+  );
+}
 
-  const handleCustomColorApply = () => {
-    editorCallbacks.onElementBgColorChange?.(customColor);
-    if (!recentColors.includes(customColor)) {
-      setRecentColors(prev => [customColor, ...prev.slice(0, 4)]);
-    }
-  };
+function BgColorSection({ editorCallbacks }: TextColorSectionProps) {
+  const documentColors = useDocumentColors();
+  return (
+    <div className="es-section">
+      <ColorPicker
+        onChange={(c) => editorCallbacks.onBgColorChange?.(c)}
+        onClear={() => editorCallbacks.onBgColorChange?.('transparent')}
+        documentColors={documentColors}
+        allowTransparent
+        clearLabel="Remove highlight"
+      />
+    </div>
+  );
+}
 
-  const handlePresetColorClick = (color: string) => {
-    editorCallbacks.onElementBgColorChange?.(color);
-  };
+function ElementBgColorSection({ editorCallbacks }: TextColorSectionProps) {
+  const documentColors = useDocumentColors();
+  return (
+    <div className="es-section">
+      <ColorPicker
+        onChange={(c) => editorCallbacks.onElementBgColorChange?.(c)}
+        onClear={() => editorCallbacks.onElementBgColorChange?.('transparent')}
+        documentColors={documentColors}
+        allowTransparent
+        clearLabel="Remove background"
+      />
+    </div>
+  );
+}
 
-  const handleRemoveBackground = () => {
-    editorCallbacks.onElementBgColorChange?.('transparent');
-  };
+function SlideBgColorSection() {
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const updateSlide = useStore((s) => s.updateSlide);
+  const documentColors = useDocumentColors();
+  const slide = slides[currentSlide];
+  if (!slide) return null;
+  return (
+    <div className="es-section">
+      <ColorPicker
+        value={slide.backgroundColor}
+        onChange={(c) => updateSlide(currentSlide, { backgroundColor: c })}
+        onClear={() => updateSlide(currentSlide, { backgroundColor: 'transparent' })}
+        documentColors={documentColors}
+        allowGradients
+        allowTransparent
+        clearLabel="Transparent"
+      />
+    </div>
+  );
+}
+
+function useSelectedShapes() {
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const selectedElementIds = useStore((s) => s.selectedElementIds);
+  const selectedElementId = useStore((s) => s.selectedElementId);
+
+  const slide = slides[currentSlide];
+  const ids = selectedElementIds.length > 0
+    ? selectedElementIds
+    : (selectedElementId ? [selectedElementId] : []);
+
+  const shapeIds = ids.filter((id) => {
+    const el = slide?.elements.find((e) => e.id === id);
+    return el?.type === 'shape';
+  });
+  const firstShape = slide?.elements.find((e) => e.id === shapeIds[0]);
+  return { shapeIds, firstShape };
+}
+
+function ShapeFillColorSection() {
+  const updateShapeElement = useStore((s) => s.updateShapeElement);
+  const documentColors = useDocumentColors();
+  const { shapeIds, firstShape } = useSelectedShapes();
+  const fillColor = (firstShape as { fillColor?: string } | undefined)?.fillColor;
+
+  const apply = (fill: string) => shapeIds.forEach((id) => updateShapeElement(id, { fillColor: fill }));
 
   return (
-    <div className="p-4">
-      <h3 className="text-sm font-semibold text-gray-900 mb-3">Text Box Background</h3>
+    <div className="es-section">
+      <ColorPicker
+        value={fillColor}
+        onChange={apply}
+        documentColors={documentColors}
+        allowGradients
+      />
+    </div>
+  );
+}
 
-      {/* Remove Background Button */}
+function ShapeChangerSection() {
+  const updateShapeElement = useStore((s) => s.updateShapeElement);
+  const { shapeIds, firstShape } = useSelectedShapes();
+  const currentType = (firstShape as { shapeType?: ShapeType } | undefined)?.shapeType ?? 'rectangle';
+
+  const apply = (next: ShapeType) => {
+    if (shapeIds.length === 0) return;
+    shapeIds.forEach((id) => updateShapeElement(id, { shapeType: next }));
+  };
+
+  if (shapeIds.length === 0) {
+    return (
+      <section className="es-section">
+        <div className="es-empty">
+          <Squares2X2Icon />
+          <div className="es-empty-title">Select a shape</div>
+          <div className="es-empty-body">
+            Pick a shape on the canvas to swap it for a different one without losing its size or position.
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="es-section">
+      {ELEMENT_CATEGORIES.filter((c) => c.id !== 'icons').map((category) => (
+        <div key={category.id} className="es-shelf">
+          <div className="es-shelf-head">
+            <span className="es-shelf-title">
+              {category.name}
+              <span className="es-count">{category.items.length}</span>
+            </span>
+          </div>
+          <div className="es-grid-3">
+            {category.items
+              .filter((item): item is ShapeItem => item.kind === 'shape')
+              .map((item) => {
+                const selected = currentType === item.shapeType;
+                return (
+                  <button
+                    key={item.shapeType}
+                    type="button"
+                    className="es-shape-tile"
+                    aria-pressed={selected}
+                    title={item.name}
+                    onClick={() => apply(item.shapeType)}
+                    style={selected ? { borderColor: 'var(--accent-ink)', background: 'var(--accent-wash)' } : undefined}
+                  >
+                    <div className="es-shape-stage">
+                      <ShapeRenderer
+                        shapeType={item.shapeType}
+                        fillColor={SHAPE_FILL}
+                        borderColor={SHAPE_STROKE}
+                        borderWidth={1.5}
+                        preserveAspectRatio="xMidYMid meet"
+                      />
+                    </div>
+                    <span className="es-shape-label">{item.name}</span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ShapeBorderColorSection() {
+  const updateShapeElement = useStore((s) => s.updateShapeElement);
+  const documentColors = useDocumentColors();
+  const { shapeIds, firstShape } = useSelectedShapes();
+  const borderColor = (firstShape as { borderColor?: string } | undefined)?.borderColor;
+
+  const applyColor = (c: string) =>
+    shapeIds.forEach((id) => updateShapeElement(id, { borderColor: c }));
+
+  return (
+    <div className="es-section">
+      <ColorPicker
+        value={borderColor}
+        onChange={applyColor}
+        documentColors={documentColors}
+      />
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────
+// Element tile + shelf primitives
+// ──────────────────────────────────────────────
+
+function ItemPreview({ item }: { item: ElementItem }) {
+  if (item.kind === 'shape') {
+    return (
+      <ShapeRenderer
+        shapeType={item.shapeType}
+        fillColor={SHAPE_FILL}
+        borderColor={SHAPE_STROKE}
+        borderWidth={1.5}
+        preserveAspectRatio="xMidYMid meet"
+      />
+    );
+  }
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path strokeLinecap="round" strokeLinejoin="round" d={item.path} />
+    </svg>
+  );
+}
+
+interface ItemTileProps {
+  item: ElementItem;
+  onClick: (item: ElementItem) => void;
+}
+
+function ItemTile({ item, onClick }: ItemTileProps) {
+  if (item.kind === 'shape') {
+    return (
       <button
-        onClick={handleRemoveBackground}
-        className="w-full mb-4 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+        type="button"
+        className="es-shape-tile"
+        title={item.name}
+        onClick={() => onClick(item)}
       >
-        <span className="w-4 h-4 border border-gray-300 rounded bg-white relative">
-          <span className="absolute inset-0 flex items-center justify-center text-red-500 text-xs">✕</span>
-        </span>
-        Remove Background
+        <div className="es-shape-stage">
+          <ItemPreview item={item} />
+        </div>
+        <span className="es-shape-label">{item.name}</span>
       </button>
-
-      {/* Preset Background Colors Grid */}
-      <div className="grid grid-cols-5 gap-2 mb-4">
-        {bgColors.filter(c => c !== 'transparent').map(color => (
-          <button
-            key={color}
-            className="w-8 h-8 rounded border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-            style={{ backgroundColor: color }}
-            onClick={() => handlePresetColorClick(color)}
-            title={color}
-          />
-        ))}
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="es-icon-tile"
+      title={item.name}
+      onClick={() => onClick(item)}
+    >
+      <div className="es-icon-stage">
+        <ItemPreview item={item} />
       </div>
+      <span className="es-icon-label">{item.name}</span>
+    </button>
+  );
+}
 
-      {/* Recent Colors */}
-      {recentColors.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-500 mb-2">Recent Colors</h4>
-          <div className="flex gap-2">
-            {recentColors.map((color, idx) => (
-              <button
-                key={`recent-elem-bg-${idx}`}
-                className="w-7 h-7 rounded border-2 border-gray-200 hover:scale-110 hover:border-purple-400 transition-all shadow-sm"
-                style={{ backgroundColor: color }}
-                onClick={() => handlePresetColorClick(color)}
-                title={color}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+interface ShelfProps {
+  category: ElementCategory;
+  onItemClick: (item: ElementItem) => void;
+  onSeeAll: (categoryId: string) => void;
+}
 
-      {/* Custom Color Section */}
-      <div className="mt-4 border-t border-gray-200 pt-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3">Custom Color</h3>
+function Shelf({ category, onItemClick, onSeeAll }: ShelfProps) {
+  const total = category.items.length;
+  const overflow = total > SHELF_PEEK;
+  const visible = overflow ? category.items.slice(0, SHELF_PEEK) : category.items;
 
-        <div className="flex items-center gap-3 mb-3">
-          <button
-            className="w-10 h-10 rounded-lg border-2 border-gray-300 hover:border-purple-400 transition-colors shadow-sm"
-            style={{ backgroundColor: customColor }}
-            onClick={() => setShowColorPicker(!showColorPicker)}
-            title="Click to open color picker"
-          />
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">#</span>
-              <HexColorInput
-                color={customColor}
-                onChange={setCustomColor}
-                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent uppercase"
-                prefixed={false}
-              />
-            </div>
-          </div>
-          <button
-            onClick={handleCustomColorApply}
-            className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition-colors"
-          >
-            Apply
+  return (
+    <div className="es-shelf">
+      <div className="es-shelf-head">
+        <span className="es-shelf-title">
+          {category.name}
+          <span className="es-count">{total}</span>
+        </span>
+        {overflow && (
+          <button type="button" className="es-shelf-action" onClick={() => onSeeAll(category.id)}>
+            See all
+            <ChevronRightIcon />
           </button>
-        </div>
-
-        {/* Color Picker */}
-        {showColorPicker && (
-          <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <HexColorPicker
-              color={customColor}
-              onChange={setCustomColor}
-              style={{ width: '100%', height: '160px' }}
-            />
-            <div className="mt-3 flex justify-between items-center">
-              <span className="text-xs text-gray-500">Selected: {customColor}</span>
-              <button
-                onClick={() => setShowColorPicker(false)}
-                className="text-xs text-gray-500 hover:text-gray-700"
-              >
-                Close
-              </button>
-            </div>
-          </div>
         )}
+      </div>
+      <div className="es-grid-3">
+        {visible.map((item) => (
+          <ItemTile key={item.id} item={item} onClick={onItemClick} />
+        ))}
       </div>
     </div>
   );
 }
 
+// ──────────────────────────────────────────────
+// Rail nav
+// ──────────────────────────────────────────────
+
+interface RailItem {
+  id: string;
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+}
+
+const RAIL_ITEMS: RailItem[] = [
+  { id: 'design', label: 'Design', icon: PaintBrushIcon },
+  { id: 'elements', label: 'Elements', icon: Squares2X2Icon },
+  { id: 'text', label: 'Text', icon: DocumentTextIcon },
+  { id: 'brand', label: 'Brand', icon: SwatchIcon },
+  { id: 'uploads', label: 'Uploads', icon: CloudArrowUpIcon },
+  { id: 'magic', label: 'Magic', icon: SparklesIcon },
+  { id: 'charts', label: 'Charts', icon: ChartBarIcon },
+];
+
+// ──────────────────────────────────────────────
+// Main component
+// ──────────────────────────────────────────────
+
 export function ElementsSidebar() {
-  const {
-    addElement,
-    currentSlide,
-    selectedElementId,
-    selectedElementIds,
-    slides,
-    setSelectedElement
-  } = useStore();
+  const addElement = useStore((s) => s.addElement);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const setSelectedElement = useStore((s) => s.setSelectedElement);
+  const selectedElementId = useStore((s) => s.selectedElementId);
+  const slides = useStore((s) => s.slides);
   const {
     isEditorMinimized,
     activeSidebarPanel,
     setActiveSidebarPanel,
-    editorCallbacks
+    editorCallbacks,
   } = useLayoutStore();
+
+  // The selected chart element drives the Charts panel into editor mode.
+  // When no chart is selected, the panel shows the type picker (Q9).
+  const selectedChart = useMemo(() => {
+    if (!selectedElementId) return null;
+    const slide = slides[currentSlide];
+    const el = slide?.elements.find(e => e.id === selectedElementId);
+    return el && el.type === 'chart' ? el : null;
+  }, [slides, currentSlide, selectedElementId]);
+
+  // Auto-switch to the Charts panel when a chart is selected (Q9).
+  // Doesn't override the user's choice when a non-chart element is selected
+  // — only the chart-selection event nudges the sidebar.
+  useEffect(() => {
+    if (selectedChart) setActiveSidebarPanel('charts' as any);
+  }, [selectedChart?.id, setActiveSidebarPanel]);
 
   // Upload state
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -485,72 +570,74 @@ export function ElementsSidebar() {
     templateId?: string;
   }>({ isConverting: false, currentSlide: 0, totalSlides: 0, filename: '' });
 
+  // Elements panel: shelf drill-in + cross-category search
+  const [elementsDrill, setElementsDrill] = useState<string | null>(null);
+  const [elementsSearch, setElementsSearch] = useState('');
+
   // Listen for PPT conversion progress events via socket.io
   useEffect(() => {
     collaborationService.onPPTProgress((event) => {
       if (event.type === 'init' && event.totalSlides) {
-        setConversionProgress(prev => ({
+        setConversionProgress((prev) => ({
           ...prev,
           totalSlides: event.totalSlides!,
-          templateId: event.presentationId
+          templateId: event.presentationId,
         }));
       } else if (event.type === 'slide' && event.slide) {
-        // Update progress
-        setConversionProgress(prev => ({
+        setConversionProgress((prev) => ({
           ...prev,
-          currentSlide: (event.slideIndex ?? 0) + 1
+          currentSlide: (event.slideIndex ?? 0) + 1,
         }));
 
-        // Add slide to the template in templates list
         if (event.presentationId) {
-          setTemplates(prev => prev.map(template => {
-            if (template.id === event.presentationId) {
-              // Only add if not already present
-              const slideExists = template.slides.some(s => s.id === event.slide.id);
-              if (!slideExists) {
-                return {
-                  ...template,
-                  slides: [...template.slides, event.slide]
-                };
+          setTemplates((prev) =>
+            prev.map((template) => {
+              if (template.id === event.presentationId) {
+                const slideExists = template.slides.some((s) => s.id === event.slide.id);
+                if (!slideExists) {
+                  return {
+                    ...template,
+                    slides: [...template.slides, event.slide],
+                  };
+                }
               }
-            }
-            return template;
-          }));
+              return template;
+            })
+          );
         }
       } else if (event.type === 'complete') {
-        setConversionProgress(prev => ({ ...prev, isConverting: false }));
+        setConversionProgress((prev) => ({ ...prev, isConverting: false }));
       } else if (event.type === 'error') {
         console.error('PPT conversion error:', event.error);
-        setConversionProgress(prev => ({ ...prev, isConverting: false }));
+        setConversionProgress((prev) => ({ ...prev, isConverting: false }));
         setTemplateError(event.error || 'Conversion failed');
       }
     });
   }, []);
 
-  // Use activeSidebarPanel from store instead of local state
   const activeSection = activeSidebarPanel;
   const setActiveSection = setActiveSidebarPanel;
 
-  // Fetch uploads when the uploads section is active
   useEffect(() => {
-    if (activeSection === 'uploads') {
-      fetchUploads();
-    }
+    if (activeSection === 'uploads') fetchUploads();
   }, [activeSection]);
 
-  // Fetch templates when the design section is active
   useEffect(() => {
-    if (activeSection === 'design') {
-      fetchTemplates();
+    if (activeSection === 'design') fetchTemplates();
+  }, [activeSection]);
+
+  // Reset Elements drill + search whenever the user navigates to a different rail section.
+  useEffect(() => {
+    if (activeSection !== 'elements') {
+      setElementsDrill(null);
+      setElementsSearch('');
     }
   }, [activeSection]);
 
   const fetchTemplates = async () => {
     try {
       const response = await apiService.getTemplates();
-      if (response.success && response.data) {
-        setTemplates(response.data);
-      }
+      if (response.success && response.data) setTemplates(response.data);
     } catch (error) {
       console.error('Error fetching templates:', error);
     }
@@ -565,33 +652,28 @@ export function ElementsSidebar() {
 
     try {
       for (const file of Array.from(files)) {
-        // Initialize conversion progress
         setConversionProgress({
           isConverting: true,
           currentSlide: 0,
           totalSlides: 0,
-          filename: file.name
+          filename: file.name,
         });
 
-        // Use streaming upload - slides are received via socket.io events
         const response = await apiService.uploadTemplateStreaming(file);
 
-        // Reset conversion progress
-        setConversionProgress(prev => ({ ...prev, isConverting: false }));
+        setConversionProgress((prev) => ({ ...prev, isConverting: false }));
 
         if (response.success && response.data) {
-          setTemplates(prev => [response.data!, ...prev]);
+          setTemplates((prev) => [response.data!, ...prev]);
         }
       }
     } catch (error) {
       console.error('Template upload error:', error);
       setTemplateError('Failed to upload PowerPoint file. Please try again.');
-      setConversionProgress(prev => ({ ...prev, isConverting: false }));
+      setConversionProgress((prev) => ({ ...prev, isConverting: false }));
     } finally {
       setIsUploadingTemplate(false);
-      if (templateInputRef.current) {
-        templateInputRef.current.value = '';
-      }
+      if (templateInputRef.current) templateInputRef.current.value = '';
     }
   };
 
@@ -599,10 +681,8 @@ export function ElementsSidebar() {
     try {
       const response = await apiService.deleteTemplate(templateId);
       if (response.success) {
-        setTemplates(prev => prev.filter(t => t.id !== templateId));
-        if (selectedTemplate?.id === templateId) {
-          setSelectedTemplate(null);
-        }
+        setTemplates((prev) => prev.filter((t) => t.id !== templateId));
+        if (selectedTemplate?.id === templateId) setSelectedTemplate(null);
       }
     } catch (error) {
       console.error('Delete template error:', error);
@@ -611,20 +691,17 @@ export function ElementsSidebar() {
 
   const handleAddSlideFromTemplate = async (template: Template, slideIndex: number) => {
     try {
-      // Try API first (loads from database if available)
       const response = await apiService.getTemplateSlide(template.id, slideIndex);
 
-      let slideData;
+      let slideData: any;
       if (response.success && response.data) {
         slideData = response.data;
       } else {
-        // Fallback to local state (for slides not yet in template.json)
         slideData = template.slides[slideIndex];
         if (!slideData) {
           console.error('Slide not found');
           return;
         }
-        // Generate new IDs for local slide
         slideData = {
           id: `slide-${crypto.randomUUID()}`,
           elements: (slideData.elements || []).map((el: any) => ({
@@ -633,22 +710,19 @@ export function ElementsSidebar() {
           })),
           backgroundColor: slideData.backgroundColor,
           backgroundImage: slideData.backgroundImage,
+          thumbnailUrl: slideData.thumbnailUrl,
         };
       }
 
-      // Get current store state and add the slide
-      const { slides, setSlides } = useStore.getState();
-
-      // Add slide to presentation
-      const updatedSlides = [...slides, slideData];
+      const { slides: currentSlides, setSlides } = useStore.getState();
+      const updatedSlides = [...currentSlides, slideData];
       setSlides(updatedSlides, updatedSlides.length - 1);
     } catch (error) {
       console.error('Error adding slide from template:', error);
 
-      // Fallback to local state on error
       const slideData = template.slides[slideIndex];
       if (slideData) {
-        const { slides, setSlides } = useStore.getState();
+        const { slides: currentSlides, setSlides } = useStore.getState();
         const newSlide = {
           id: `slide-${crypto.randomUUID()}`,
           elements: (slideData.elements || []).map((el: any) => ({
@@ -657,8 +731,9 @@ export function ElementsSidebar() {
           })),
           backgroundColor: slideData.backgroundColor,
           backgroundImage: slideData.backgroundImage,
+          thumbnailUrl: slideData.thumbnailUrl,
         };
-        const updatedSlides = [...slides, newSlide];
+        const updatedSlides = [...currentSlides, newSlide];
         setSlides(updatedSlides, updatedSlides.length - 1);
       }
     }
@@ -667,9 +742,7 @@ export function ElementsSidebar() {
   const fetchUploads = async () => {
     try {
       const response = await apiService.getUploads();
-      if (response.success && response.data) {
-        setUploadedFiles(response.data);
-      }
+      if (response.success && response.data) setUploadedFiles(response.data);
     } catch (error) {
       console.error('Error fetching uploads:', error);
     }
@@ -686,14 +759,17 @@ export function ElementsSidebar() {
       for (const file of Array.from(files)) {
         const response = await apiService.uploadFile(file);
         if (response.success && response.data) {
-          setUploadedFiles(prev => [{
-            id: response.data!.id,
-            filename: response.data!.filename,
-            type: response.data!.type,
-            url: response.data!.url,
-            size: response.data!.size,
-            createdAt: response.data!.createdAt
-          }, ...prev]);
+          setUploadedFiles((prev) => [
+            {
+              id: response.data!.id,
+              filename: response.data!.filename,
+              type: response.data!.type,
+              url: response.data!.url,
+              size: response.data!.size,
+              createdAt: response.data!.createdAt,
+            },
+            ...prev,
+          ]);
         }
       }
     } catch (error) {
@@ -701,50 +777,42 @@ export function ElementsSidebar() {
       setUploadError('Failed to upload file. Please try again.');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
   const handleDeleteUpload = async (filename: string) => {
     try {
       const response = await apiService.deleteUpload(filename);
-      if (response.success) {
-        setUploadedFiles(prev => prev.filter(f => f.filename !== filename));
-      }
+      if (response.success) setUploadedFiles((prev) => prev.filter((f) => f.filename !== filename));
     } catch (error) {
       console.error('Delete error:', error);
     }
   };
 
-  const handleAddUploadedImage = (url: string) => {
-    // Get the base URL from environment or default
+  const resolveUploadUrl = (url: string) => {
     const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
     const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-    const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
+    return url.startsWith('http') ? url : `${baseUrl}${url}`;
+  };
 
+  const handleAddUploadedImage = (url: string) => {
     const element: CreateImageElement = {
       type: 'image',
       position: { x: 100, y: 200 },
       size: { width: 300, height: 200 },
-      imageUrl: fullUrl
+      imageUrl: resolveUploadUrl(url),
     };
     const elementId = addElement(currentSlide, element);
     setSelectedElement(elementId);
   };
 
   const handleAddUploadedVideo = (url: string) => {
-    // Get the base URL from environment or default
-    const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
-    const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-    const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
-
     const element: CreateVideoElement = {
       type: 'video',
       position: { x: 100, y: 200 },
       size: { width: 400, height: 225 },
-      videoUrl: fullUrl
+      videoUrl: resolveUploadUrl(url),
     };
     const elementId = addElement(currentSlide, element);
     setSelectedElement(elementId);
@@ -759,32 +827,19 @@ export function ElementsSidebar() {
     'Times New Roman, Times, serif',
     'Trebuchet MS, Helvetica, sans-serif',
     'Verdana, Geneva, sans-serif',
-    'League Gothic, sans-serif'
+    'League Gothic, sans-serif',
   ];
 
-  // Display names for font families
   const getFontDisplayName = (font: string) => font.split(',')[0].trim();
 
-  const colors = [
-    '#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff', '#808080', '#800000'
-  ];
-
-  if (isEditorMinimized) {
-    return null;
-  }
-
-  const currentSlideData = slides[currentSlide];
-  const effectiveSelectedId = selectedElementId || (selectedElementIds?.length === 1 ? selectedElementIds[0] : null);
-  const selectedElement = effectiveSelectedId
-    ? currentSlideData?.elements?.find(el => el.id === effectiveSelectedId)
-    : null;
+  if (isEditorMinimized) return null;
 
   const handleAddText = () => {
     const element: CreateTextElement = {
       type: 'text',
       content: '<p>Double-click to edit and format your text with the rich text editor!</p>',
       position: { x: 50, y: 150 },
-      size: { width: 400, height: 100 }
+      size: { width: 400, height: 100 },
     };
     const elementId = addElement(currentSlide, element);
     setSelectedElement(elementId);
@@ -796,792 +851,866 @@ export function ElementsSidebar() {
       content: '<h1>Your Slide Title</h1>',
       level: 1,
       position: { x: 50, y: 50 },
-      size: { width: 500, height: 80 }
+      size: { width: 500, height: 80 },
     };
     const elementId = addElement(currentSlide, element);
     setSelectedElement(elementId);
   };
 
-  const handleAddShape = (shapeType: 'rectangle' | 'circle' | 'triangle' | 'arrow' | 'diamond' | 'pentagon' | 'hexagon' | 'star' | 'heart' | 'cloud' | 'callout' | 'parallelogram' = 'rectangle') => {
+  const handleAddShape = (shapeType: ShapeType = 'rectangle') => {
+    const isLine = isLineShape(shapeType);
     const element: CreateShapeElement = {
       type: 'shape',
       position: { x: 150, y: 150 },
-      size: { width: 200, height: 150 },
-      shapeType: shapeType,
+      // Lines have zero vertical extent — the stroke renders outside the
+      // bounding box via overflow:visible so the visual line still shows up,
+      // and the selection rectangle collapses out of view (see SelectionBox
+      // lineMode) so the user only sees the line + endpoint handles.
+      size: isLine ? { width: 300, height: 0 } : { width: 200, height: 150 },
+      shapeType,
       fillColor: '#3B82F6',
       borderColor: '#1E40AF',
-      borderWidth: 2,
-      opacity: 1
+      borderWidth: isLine ? 3 : 2,
+      opacity: 1,
     };
     const elementId = addElement(currentSlide, element);
     setSelectedElement(elementId);
   };
 
-  // All available shape types for the sidebar
-  const shapeTypes: Array<'rectangle' | 'circle' | 'triangle' | 'arrow' | 'diamond' | 'pentagon' | 'hexagon' | 'star' | 'heart' | 'cloud' | 'callout' | 'parallelogram'> = [
-    'rectangle', 'circle', 'triangle', 'arrow', 'diamond', 'pentagon',
-    'hexagon', 'star', 'heart', 'cloud', 'callout', 'parallelogram'
-  ];
+  const handleAddChart = (chartType: ChartType) => {
+    const defaults = defaultChartElementProps(chartType);
+    const element: CreateChartElement = {
+      type: 'chart',
+      // Q12: default insert size 480×320 (16:10 fits comfortably alongside
+      // text). addElement handles overlap-avoidance and final positioning.
+      position: { x: 100, y: 100 },
+      size: { width: 480, height: 320 },
+      ...defaults,
+    };
+    const elementId = addElement(currentSlide, element);
+    setSelectedElement(elementId);
+  };
+
+  const handleAddIcon = (icon: IconItem) => {
+    const element: CreateImageElement = {
+      type: 'image',
+      position: { x: 200, y: 150 },
+      size: { width: 120, height: 120 },
+      imageUrl: iconToDataUrl(icon),
+    };
+    const elementId = addElement(currentSlide, element);
+    setSelectedElement(elementId);
+  };
+
+  const handleAddItem = (item: ElementItem) => {
+    if (item.kind === 'shape') handleAddShape(item.shapeType);
+    else handleAddIcon(item);
+  };
+
+  const searchResults = useMemo(() => {
+    const q = elementsSearch.trim().toLowerCase();
+    if (!q) return null;
+    const all = ELEMENT_CATEGORIES.flatMap((c) => c.items);
+    return all.filter(
+      (item) =>
+        item.name.toLowerCase().includes(q) ||
+        item.keywords.some((k) => k.toLowerCase().includes(q))
+    );
+  }, [elementsSearch]);
+
+  const drilledCategory = elementsDrill
+    ? ELEMENT_CATEGORIES.find((c) => c.id === elementsDrill) ?? null
+    : null;
+
+  const panelKicker = (() => {
+    switch (activeSection) {
+      case 'fontFamily': return 'Fonts';
+      case 'fontColor': return 'Text color';
+      case 'bgColor': return 'Highlight';
+      case 'elementBgColor': return 'Box fill';
+      case 'slideBgColor': return 'Slide background';
+      case 'shapeFillColor': return 'Shape fill';
+      case 'shapeBorderColor': return 'Shape border';
+      case 'shapeSelector': return 'Change shape';
+      case 'position': return 'Position';
+      case 'magic': return 'Magic media';
+      default: return activeSection;
+    }
+  })();
 
   return (
-    <div className="flex h-full">
-      {/* Left Navigation Bar */}
-      <div className="w-16 bg-white flex flex-col">
-        {/* Navigation Icons */}
-        <div className="flex flex-col p-2 space-y-1">
-          <button
-            onClick={() => setActiveSection('design')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'design'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <PaintBrushIcon className="w-6 h-6 mb-1" />
-            <span>Design</span>
-          </button>
+    <div className="lp-root es-root">
+      {/* ────────── Left Navigation Rail ────────── */}
+      <nav className="es-rail" aria-label="Sidebar sections">
+        {RAIL_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const isActive = activeSection === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className="es-rail-btn"
+              aria-current={isActive}
+              onClick={() => setActiveSection(item.id as any)}
+            >
+              <Icon />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
 
-          <button
-            onClick={() => setActiveSection('elements')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'elements'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <Squares2X2Icon className="w-6 h-6 mb-1" />
-            <span>Elements</span>
-          </button>
+        <div style={{ flex: 1 }} />
 
-          <button
-            onClick={() => setActiveSection('text')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'text'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <DocumentTextIcon className="w-6 h-6 mb-1" />
-            <span>Text</span>
-          </button>
+        <button
+          type="button"
+          className="es-rail-btn"
+          aria-current={activeSection === 'apps'}
+          onClick={() => setActiveSection('apps' as any)}
+        >
+          <CubeIcon />
+          <span>Apps</span>
+        </button>
+      </nav>
 
-          <button
-            onClick={() => setActiveSection('brand')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'brand'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <SwatchIcon className="w-6 h-6 mb-1" />
-            <span>Brand</span>
-          </button>
-
-          <button
-            onClick={() => setActiveSection('uploads')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'uploads'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <CloudArrowUpIcon className="w-6 h-6 mb-1" />
-            <span>Uploads</span>
-          </button>
-
-          <button
-            onClick={() => setActiveSection('magic')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'magic'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <SparklesIcon className="w-6 h-6 mb-1" />
-            <span>Magic Media</span>
-          </button>
-
-          <button
-            onClick={() => setActiveSection('charts')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'charts'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <ChartBarIcon className="w-6 h-6 mb-1" />
-            <span>Charts</span>
-          </button>
-        </div>
-
-        {/* Apps Section at Bottom */}
-        <div className="mt-auto p-2">
-          <button
-            onClick={() => setActiveSection('apps')}
-            className={`flex flex-col items-center p-3 rounded-lg text-xs transition-colors ${activeSection === 'apps'
-              ? 'bg-purple-100 text-purple-600'
-              : 'text-gray-600 hover:bg-gray-100'
-              }`}
-          >
-            <CubeIcon className="w-6 h-6 mb-1" />
-            <span>Apps</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Main Content Panel */}
-      <div className="w-80 bg-white border-r border-gray-200 flex flex-col h-full">
-        {/* Search Bar */}
-        <div className="p-4 border-b border-gray-200">
-          <div className="relative">
-            <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+      {/* ────────── Main Panel ────────── */}
+      <div className="es-panel">
+        {/* Header: mono kicker + search */}
+        <div className="es-panel-head">
+          <div className="es-kicker">{panelKicker}</div>
+          <div className="es-input-wrap">
+            <MagnifyingGlassIcon className="es-input-icon" />
             <input
               type="text"
-              placeholder="Search fonts and combinations"
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+              className="es-input"
+              placeholder={
+                activeSection === 'elements'
+                  ? 'Search shapes, icons, callouts…'
+                  : 'Search this panel…'
+              }
+              aria-label="Search this panel"
+              value={activeSection === 'elements' ? elementsSearch : ''}
+              onChange={(e) => {
+                if (activeSection === 'elements') setElementsSearch(e.target.value);
+              }}
+              readOnly={activeSection !== 'elements'}
             />
           </div>
         </div>
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto">
-          {/* Text Section */}
-          {activeSection === 'text' && (
-            <div className="p-4">
-              <div className="space-y-6">
-                {/* Add a text box section */}
-                <div>
-                  <button
-                    onClick={handleAddText}
-                    className="w-full flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-                  >
-                    <PlusIcon className="w-6 h-6 text-gray-400 group-hover:text-purple-600 mr-2" />
-                    <span className="text-sm font-medium text-gray-600 group-hover:text-purple-700">Add a text box</span>
+        {/* Scrolling content area */}
+        <div className="es-scroll">
+          {/* ── Elements ── three modes: search / drill-in / shelves ── */}
+          {activeSection === 'elements' && (
+            <>
+              {searchResults ? (
+                /* Mode 1: cross-category search results */
+                <section className="es-section">
+                  <div className="es-search-meta">
+                    <span>
+                      {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'} for
+                      {' '}&ldquo;{elementsSearch.trim()}&rdquo;
+                    </span>
+                    <button type="button" onClick={() => setElementsSearch('')}>Clear</button>
+                  </div>
+                  {searchResults.length > 0 ? (
+                    <div className="es-grid-3">
+                      {searchResults.map((item) => (
+                        <ItemTile key={`${item.kind}-${item.id}`} item={item} onClick={handleAddItem} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="es-empty">
+                      <MagnifyingGlassIcon />
+                      <div className="es-empty-title">No matching elements</div>
+                      <div className="es-empty-body">
+                        Try a different term — shapes, icons, and callouts all live here.
+                      </div>
+                    </div>
+                  )}
+                </section>
+              ) : drilledCategory ? (
+                /* Mode 2: drill-in — full grid for one category */
+                <section className="es-section">
+                  <button type="button" className="es-btn-back" onClick={() => setElementsDrill(null)}>
+                    <ChevronLeftIcon className="w-3.5 h-3.5" />
+                    Elements
                   </button>
-                </div>
+                  <div>
+                    <div className="es-h">{drilledCategory.name}</div>
+                    <div className="es-meta" style={{ marginTop: 4 }}>
+                      {drilledCategory.items.length} items
+                    </div>
+                  </div>
+                  <div className="es-grid-3">
+                    {drilledCategory.items.map((item) => (
+                      <ItemTile key={`${item.kind}-${item.id}`} item={item} onClick={handleAddItem} />
+                    ))}
+                  </div>
+                </section>
+              ) : (
+                /* Mode 3: default — Quick Add + category shelves */
+                <>
+                  <section className="es-section">
+                    <div>
+                      <div className="es-section-title"><span>Quick add</span></div>
+                      <div className="es-grid-2">
+                        <button type="button" className="es-tile" onClick={handleAddText}>
+                          <DocumentTextIcon className="es-tile-icon" />
+                          <span className="es-tile-label">Text box</span>
+                        </button>
+                        <button type="button" className="es-tile" onClick={handleAddHeading}>
+                          <HashtagIcon className="es-tile-icon" />
+                          <span className="es-tile-label">Heading</span>
+                        </button>
+                        <button type="button" className="es-tile" onClick={() => handleAddShape()}>
+                          <RectangleStackIcon className="es-tile-icon" />
+                          <span className="es-tile-label">Shape</span>
+                        </button>
+                        <button type="button" className="es-tile" onClick={() => setActiveSection('uploads' as any)}>
+                          <PhotoIcon className="es-tile-icon" />
+                          <span className="es-tile-label">Media</span>
+                        </button>
+                      </div>
+                    </div>
+                  </section>
 
-                {/* Default text styles */}
+                  <section className="es-section">
+                    {ELEMENT_CATEGORIES.map((category) => (
+                      <Shelf
+                        key={category.id}
+                        category={category}
+                        onItemClick={handleAddItem}
+                        onSeeAll={setElementsDrill}
+                      />
+                    ))}
+                  </section>
+                </>
+              )}
+            </>
+          )}
+
+          {/* ── Text ── */}
+          {activeSection === 'text' && (
+            <>
+              <section className="es-section">
+                <button
+                  type="button"
+                  className="es-dropzone"
+                  onClick={handleAddText}
+                  style={{ padding: '22px 16px' }}
+                >
+                  <PlusIcon style={{ width: 20, height: 20 }} />
+                  <span className="es-dropzone-title">Add a text box</span>
+                </button>
+              </section>
+
+              <section className="es-section">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Default text styles</h3>
-                  <div className="space-y-2">
+                  <div className="es-section-title"><span>Default styles</span></div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <button
+                      type="button"
+                      className="es-card"
+                      style={{ padding: '14px 16px' }}
                       onClick={() => {
                         const element: CreateHeadingElement = {
                           type: 'heading',
                           content: '<h1>Add a heading</h1>',
                           level: 1,
                           position: { x: 50, y: 50 },
-                          size: { width: 500, height: 80 }
+                          size: { width: 500, height: 80 },
                         };
                         const elementId = addElement(currentSlide, element);
                         setSelectedElement(elementId);
                       }}
-                      className="w-full text-left p-3 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors"
                     >
-                      <div className="text-2xl font-bold text-gray-900">Add a heading</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ink)', letterSpacing: '-0.02em', lineHeight: 1.15 }}>
+                        Add a heading
+                      </div>
+                      <div className="es-meta" style={{ marginTop: 4 }}>H1 · 48 pt</div>
                     </button>
 
                     <button
+                      type="button"
+                      className="es-card"
+                      style={{ padding: '14px 16px' }}
                       onClick={() => {
                         const element: CreateHeadingElement = {
                           type: 'heading',
                           content: '<h2>Add a subheading</h2>',
                           level: 2,
                           position: { x: 50, y: 150 },
-                          size: { width: 450, height: 60 }
+                          size: { width: 450, height: 60 },
                         };
                         const elementId = addElement(currentSlide, element);
                         setSelectedElement(elementId);
                       }}
-                      className="w-full text-left p-3 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors"
                     >
-                      <div className="text-xl font-semibold text-gray-700">Add a subheading</div>
-                    </button>
-
-                    <button
-                      onClick={handleAddText}
-                      className="w-full text-left p-3 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors"
-                    >
-                      <div className="text-base text-gray-600">Add a little bit of body text</div>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Dynamic text */}
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Dynamic text</h3>
-                  <div className="space-y-2">
-                    <button className="w-full text-left p-3 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors">
-                      <div className="flex items-center">
-                        <div className="w-8 h-8 bg-purple-600 text-white rounded flex items-center justify-center text-sm font-bold mr-3">
-                          1
-                        </div>
-                        <span className="text-sm text-gray-700">Page numbers</span>
+                      <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--ink)', letterSpacing: '-0.01em', lineHeight: 1.2 }}>
+                        Add a subheading
                       </div>
+                      <div className="es-meta" style={{ marginTop: 4 }}>H2 · 28 pt</div>
                     </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* Elements Section */}
-          {activeSection === 'elements' && (
-            <div className="p-4">
-              <div className="space-y-6">
-                {/* Quick Add Elements */}
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Quick Add</h3>
-                  <div className="grid grid-cols-2 gap-3">
                     <button
+                      type="button"
+                      className="es-card"
+                      style={{ padding: '14px 16px' }}
                       onClick={handleAddText}
-                      className="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors group"
                     >
-                      <DocumentTextIcon className="w-8 h-8 text-gray-600 group-hover:text-purple-600 mb-2" />
-                      <span className="text-sm font-medium text-gray-700 group-hover:text-purple-700">Text</span>
-                    </button>
-                    <button
-                      onClick={handleAddHeading}
-                      className="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-                    >
-                      <HashtagIcon className="w-8 h-8 text-gray-600 group-hover:text-purple-600 mb-2" />
-                      <span className="text-sm font-medium text-gray-700 group-hover:text-purple-700">Heading</span>
-                    </button>
-                    <button
-                      onClick={() => handleAddShape()}
-                      className="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-                    >
-                      <RectangleStackIcon className="w-8 h-8 text-gray-600 group-hover:text-purple-600 mb-2" />
-                      <span className="text-sm font-medium text-gray-700 group-hover:text-purple-700">Shape</span>
-                    </button>
-                    <button
-                      onClick={() => setActiveSection('uploads')}
-                      className="flex flex-col items-center p-4 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-                    >
-                      <CloudArrowUpIcon className="w-8 h-8 text-gray-600 group-hover:text-purple-600 mb-2" />
-                      <span className="text-sm font-medium text-gray-700 group-hover:text-purple-700">Media</span>
+                      <div style={{ fontSize: 13.5, color: 'var(--ink-muted)', lineHeight: 1.45 }}>
+                        Add a little bit of body text
+                      </div>
+                      <div className="es-meta" style={{ marginTop: 4 }}>Body · 14 pt</div>
                     </button>
                   </div>
                 </div>
+              </section>
 
-                {/* Shapes Gallery */}
+              <section className="es-section">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Shapes</h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {shapeTypes.map((shapeType) => (
-                      <ShapePreview
-                        key={shapeType}
-                        shapeType={shapeType}
-                        size={40}
-                        onClick={() => handleAddShape(shapeType)}
-                      />
-                    ))}
-                  </div>
+                  <div className="es-section-title"><span>Dynamic</span></div>
+                  <button
+                    type="button"
+                    className="es-card"
+                    style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12 }}
+                  >
+                    <span
+                      className="es-meta"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'var(--accent-wash)',
+                        color: 'var(--accent-ink)',
+                        borderRadius: 2,
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                    >
+                      1
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>Page numbers</span>
+                  </button>
                 </div>
-              </div>
-            </div>
+              </section>
+            </>
           )}
 
-          {/* Design Section */}
+          {/* ── Design / Templates ── */}
           {activeSection === 'design' && (
-            <div className="p-4">
-              <div className="space-y-4">
-                {/* Template View - Show slides when a template is selected */}
-                {selectedTemplate ? (
-                  <div className="space-y-4">
-                    {/* Back Button */}
-                    <button
-                      onClick={() => setSelectedTemplate(null)}
-                      className="flex items-center text-sm text-gray-600 hover:text-purple-600 transition-colors"
-                    >
-                      <ChevronLeftIcon className="w-4 h-4 mr-1" />
-                      Back to Templates
-                    </button>
+            <>
+              {selectedTemplate ? (
+                <section className="es-section">
+                  <button type="button" className="es-btn-back" onClick={() => setSelectedTemplate(null)}>
+                    <ChevronLeftIcon className="w-3.5 h-3.5" />
+                    All templates
+                  </button>
 
-                    {/* Template Name */}
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-gray-900 truncate">
-                        {selectedTemplate.name}
-                      </h3>
-                      <span className="text-xs text-gray-500">
-                        {selectedTemplate.slides.length} / {selectedTemplate.slideCount} slides
-                      </span>
-                    </div>
-
-                    {/* Loading Progress Indicator */}
-                    {conversionProgress.isConverting && conversionProgress.templateId === selectedTemplate.id && (
-                      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 space-y-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-purple-700 font-medium flex items-center">
-                            <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-purple-600" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Loading slides...
-                          </span>
-                          <span className="text-purple-600">
-                            {conversionProgress.currentSlide} / {conversionProgress.totalSlides}
-                          </span>
-                        </div>
-                        <div className="w-full bg-purple-200 rounded-full h-2">
-                          <div
-                            className="bg-purple-600 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${(conversionProgress.currentSlide / conversionProgress.totalSlides) * 100}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Slides Grid */}
-                    <div className="grid grid-cols-2 gap-3">
-                      {selectedTemplate.slides.map((slide, index) => {
-                        const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
-                        const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-                        const thumbnailUrl = selectedTemplate.thumbnails[index]
-                          ? `${baseUrl}${selectedTemplate.thumbnails[index]}`
-                          : null;
-
-                        return (
-                          <div
-                            key={slide.id}
-                            className="relative group aspect-[16/9] bg-gray-100 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all border border-gray-200"
-                            onClick={() => handleAddSlideFromTemplate(selectedTemplate, index)}
-                          >
-                            {thumbnailUrl ? (
-                              <img
-                                src={thumbnailUrl}
-                                alt={`Slide ${index + 1}`}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center"
-                                style={{ backgroundColor: slide.backgroundColor || '#ffffff' }}>
-                                <span className="text-gray-400 text-xs">Slide {index + 1}</span>
-                              </div>
-                            )}
-
-                            {/* Slide Number Badge */}
-                            <div className="absolute top-1 left-1 bg-black bg-opacity-60 text-white text-xs px-1.5 py-0.5 rounded">
-                              {index + 1}
-                            </div>
-
-                            {/* Hover Overlay */}
-                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-opacity flex items-center justify-center">
-                              <div className="opacity-0 group-hover:opacity-100 transition-opacity text-center">
-                                <PlusIcon className="w-8 h-8 text-white mx-auto mb-1" />
-                                <span className="text-white text-xs font-medium">Add to Presentation</span>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+                  <div>
+                    <div className="es-h" style={{ wordBreak: 'break-word' }}>{selectedTemplate.name}</div>
+                    <div className="es-meta" style={{ marginTop: 4 }}>
+                      {selectedTemplate.slides.length} / {selectedTemplate.slideCount} slides
                     </div>
                   </div>
-                ) : (
-                  /* Templates List View */
-                  <div className="space-y-4">
-                    {/* Upload PPT Button */}
-                    <div>
-                      <input
-                        ref={templateInputRef}
-                        type="file"
-                        accept=".pptx,.ppt"
-                        onChange={handleTemplateUpload}
-                        className="hidden"
-                        id="template-upload"
-                      />
-                      <label
-                        htmlFor="template-upload"
-                        className={`w-full flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${isUploadingTemplate
-                          ? 'border-purple-400 bg-purple-50'
-                          : 'border-gray-300 hover:border-purple-300 hover:bg-purple-50'
-                          }`}
-                      >
-                        {isUploadingTemplate ? (
-                          <>
-                            <div className="w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full animate-spin mb-2" />
-                            <span className="text-sm font-medium text-purple-600">Processing PowerPoint...</span>
-                            <span className="text-xs text-purple-500 mt-1">This may take a moment</span>
-                          </>
-                        ) : (
-                          <>
-                            <DocumentArrowUpIcon className="w-10 h-10 text-gray-400 mb-2" />
-                            <span className="text-sm font-medium text-gray-600">Upload PowerPoint</span>
-                            <span className="text-xs text-gray-400 mt-1">.pptx or .ppt files</span>
-                          </>
-                        )}
-                      </label>
-                    </div>
 
-                    {templateError && (
-                      <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <p className="text-sm text-red-600">{templateError}</p>
+                  {conversionProgress.isConverting && conversionProgress.templateId === selectedTemplate.id && (
+                    <div className="es-progress-row">
+                      <div className="es-progress-label">
+                        <span>Loading slides…</span>
+                        <span className="es-meta">
+                          {conversionProgress.currentSlide} / {conversionProgress.totalSlides}
+                        </span>
                       </div>
-                    )}
+                      <div className="es-progress-bar">
+                        <div style={{ width: `${(conversionProgress.currentSlide / Math.max(conversionProgress.totalSlides, 1)) * 100}%` }} />
+                      </div>
+                    </div>
+                  )}
 
-                    {/* Templates Header */}
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-gray-900">Your Templates</h3>
-                      <span className="text-xs text-gray-500">{templates.length} templates</span>
+                  <div className="es-grid-2">
+                    {selectedTemplate.slides.map((slide, index) => {
+                      const thumb = selectedTemplate.thumbnails[index]
+                        ? resolveUploadUrl(selectedTemplate.thumbnails[index])
+                        : null;
+                      return (
+                        <div
+                          key={slide.id}
+                          className="es-slide-tile"
+                          onClick={() => handleAddSlideFromTemplate(selectedTemplate, index)}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          {thumb ? (
+                            <img src={thumb} alt={`Slide ${index + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          ) : (
+                            <div
+                              style={{
+                                width: '100%', height: '100%',
+                                background: slide.backgroundColor || 'var(--paper-sunk)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              }}
+                            >
+                              <span className="es-meta">Slide {index + 1}</span>
+                            </div>
+                          )}
+                          <span className="es-slide-num">{index + 1}</span>
+                          <div className="es-slide-hover">
+                            <PlusIcon style={{ width: 14, height: 14 }} />
+                            Add slide
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : (
+                <section className="es-section">
+                  <label
+                    htmlFor="template-upload"
+                    className="es-dropzone"
+                    data-busy={isUploadingTemplate}
+                  >
+                    <input
+                      ref={templateInputRef}
+                      type="file"
+                      accept=".pptx,.ppt"
+                      onChange={handleTemplateUpload}
+                      style={{ display: 'none' }}
+                      id="template-upload"
+                    />
+                    {isUploadingTemplate ? (
+                      <>
+                        <Spinner />
+                        <span className="es-dropzone-title">Processing PowerPoint…</span>
+                        <span className="es-dropzone-hint">This may take a moment</span>
+                      </>
+                    ) : (
+                      <>
+                        <DocumentArrowUpIcon style={{ width: 28, height: 28, strokeWidth: 1.4 }} />
+                        <span className="es-dropzone-title">Import PowerPoint</span>
+                        <span className="es-dropzone-hint">.pptx · .ppt</span>
+                      </>
+                    )}
+                  </label>
+
+                  {templateError && (
+                    <div style={{
+                      padding: '10px 12px',
+                      background: 'oklch(0.97 0.02 27)',
+                      border: '1px solid oklch(0.82 0.08 27)',
+                      borderRadius: 2,
+                      color: 'oklch(0.42 0.14 27)',
+                      fontSize: 12,
+                    }}>
+                      {templateError}
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="es-section-title">
+                      <span>Your templates</span>
+                      <span className="es-count">{templates.length}</span>
                     </div>
 
-                    {/* Templates Grid */}
                     {templates.length > 0 ? (
-                      <div className="space-y-3">
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                         {templates.map((template) => {
-                          const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
-                          const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-                          const thumbnailUrl = template.thumbnails[0]
-                            ? `${baseUrl}${template.thumbnails[0]}`
-                            : null;
-
+                          const thumb = template.thumbnails[0] ? resolveUploadUrl(template.thumbnails[0]) : null;
                           return (
                             <div
                               key={template.id}
-                              className="relative group bg-white border border-gray-200 rounded-lg overflow-hidden cursor-pointer hover:border-purple-300 hover:shadow-md transition-all"
+                              className="es-card"
                               onClick={() => setSelectedTemplate(template)}
+                              role="button"
+                              tabIndex={0}
                             >
-                              {/* Thumbnail */}
-                              <div className="aspect-[16/9] bg-gray-100 relative">
-                                {thumbnailUrl ? (
-                                  <img
-                                    src={thumbnailUrl}
-                                    alt={template.name}
-                                    className="w-full h-full object-cover"
-                                  />
+                              <div className="es-card-thumb">
+                                {thumb ? (
+                                  <img src={thumb} alt={template.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                 ) : (
-                                  <div className="w-full h-full flex items-center justify-center">
-                                    <DocumentTextIcon className="w-12 h-12 text-gray-300" />
+                                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <DocumentTextIcon style={{ width: 36, height: 36, color: 'var(--ink-ghost)', strokeWidth: 1.3 }} />
                                   </div>
                                 )}
-
-                                {/* Slide Count Badge */}
-                                <div className="absolute bottom-2 right-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
-                                  {template.slideCount} slides
-                                </div>
-
-                                {/* Delete Button */}
                                 <button
+                                  type="button"
+                                  className="es-icon-btn"
+                                  style={{ position: 'absolute', top: 6, right: 6 }}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleDeleteTemplate(template.id);
                                   }}
-                                  className="absolute top-2 right-2 p-1.5 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                                  aria-label="Delete template"
                                 >
-                                  <XMarkIcon className="w-3 h-3 text-white" />
+                                  <XMarkIcon />
                                 </button>
+                                <span className="es-slide-num" style={{ top: 'auto', left: 'auto', bottom: 6, right: 6 }}>
+                                  {template.slideCount} slides
+                                </span>
                               </div>
-
-                              {/* Template Info */}
-                              <div className="p-3">
-                                <h4 className="text-sm font-medium text-gray-900 truncate">
-                                  {template.name}
-                                </h4>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  {new Date(template.createdAt).toLocaleDateString()}
-                                </p>
-                              </div>
-
-                              {/* Hover Arrow */}
-                              <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <ChevronRightIcon className="w-5 h-5 text-purple-600" />
+                              <div className="es-card-body" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div className="es-h" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {template.name}
+                                  </div>
+                                  <div className="es-meta" style={{ marginTop: 3 }}>
+                                    {new Date(template.createdAt).toLocaleDateString()}
+                                  </div>
+                                </div>
+                                <ChevronRightIcon style={{ width: 16, height: 16, color: 'var(--ink-ghost)', flexShrink: 0 }} />
                               </div>
                             </div>
                           );
                         })}
                       </div>
                     ) : (
-                      <div className="text-center py-8 text-gray-400">
-                        <DocumentTextIcon className="w-12 h-12 mx-auto mb-2" />
-                        <p className="text-sm">No templates yet</p>
-                        <p className="text-xs mt-1">Upload a PowerPoint to get started</p>
+                      <div className="es-empty">
+                        <DocumentTextIcon />
+                        <div className="es-empty-title">No templates yet</div>
+                        <div className="es-empty-body">
+                          Import a PowerPoint file above to start pulling slides into your deck.
+                        </div>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
-            </div>
+                </section>
+              )}
+            </>
           )}
 
-          {/* Brand Section */}
+          {/* ── Brand ── */}
           {activeSection === 'brand' && (
-            <div className="p-4">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Brand Kit</h3>
-                  <div className="text-sm text-gray-600">Brand elements coming soon...</div>
+            <section className="es-section">
+              <div className="es-empty">
+                <SwatchIcon />
+                <div className="es-empty-title">Brand kit</div>
+                <div className="es-empty-body">
+                  Saved colors, logos, and typography will live here. Coming in the next update.
                 </div>
               </div>
-            </div>
+            </section>
           )}
 
-          {/* Uploads Section */}
+          {/* ── Uploads ── */}
           {activeSection === 'uploads' && (
-            <div className="p-4">
-              <div className="space-y-4">
-                {/* Upload Button */}
-                <div>
+            <>
+              <section className="es-section">
+                <label htmlFor="file-upload" className="es-dropzone" data-busy={isUploading}>
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/*,video/*"
                     multiple
                     onChange={handleFileUpload}
-                    className="hidden"
+                    style={{ display: 'none' }}
                     id="file-upload"
                   />
-                  <label
-                    htmlFor="file-upload"
-                    className={`w-full flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${isUploading
-                      ? 'border-purple-400 bg-purple-50'
-                      : 'border-gray-300 hover:border-purple-300 hover:bg-purple-50'
-                      }`}
-                  >
-                    {isUploading ? (
-                      <>
-                        <div className="w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full animate-spin mb-2" />
-                        <span className="text-sm font-medium text-purple-600">Uploading...</span>
-                      </>
-                    ) : (
-                      <>
-                        <CloudArrowUpIcon className="w-10 h-10 text-gray-400 mb-2" />
-                        <span className="text-sm font-medium text-gray-600">Upload images or videos</span>
-                        <span className="text-xs text-gray-400 mt-1">Drag & drop or click to browse</span>
-                      </>
-                    )}
-                  </label>
-                </div>
+                  {isUploading ? (
+                    <>
+                      <Spinner />
+                      <span className="es-dropzone-title">Uploading…</span>
+                    </>
+                  ) : (
+                    <>
+                      <CloudArrowUpIcon style={{ width: 28, height: 28, strokeWidth: 1.4 }} />
+                      <span className="es-dropzone-title">Upload media</span>
+                      <span className="es-dropzone-hint">Images · Video</span>
+                    </>
+                  )}
+                </label>
 
                 {uploadError && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <p className="text-sm text-red-600">{uploadError}</p>
+                  <div style={{
+                    padding: '10px 12px',
+                    background: 'oklch(0.97 0.02 27)',
+                    border: '1px solid oklch(0.82 0.08 27)',
+                    borderRadius: 2,
+                    color: 'oklch(0.42 0.14 27)',
+                    fontSize: 12,
+                  }}>
+                    {uploadError}
                   </div>
                 )}
+              </section>
 
-                {/* Tabs for Images/Videos */}
-                <div className="flex border-b border-gray-200">
-                  <button
-                    onClick={() => setActiveUploadTab('images')}
-                    className={`flex-1 py-2 px-4 text-sm font-medium transition-colors ${activeUploadTab === 'images'
-                      ? 'text-purple-600 border-b-2 border-purple-600'
-                      : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                  >
-                    <PhotoIcon className="w-4 h-4 inline mr-1" />
-                    Images
-                  </button>
-                  <button
-                    onClick={() => setActiveUploadTab('videos')}
-                    className={`flex-1 py-2 px-4 text-sm font-medium transition-colors ${activeUploadTab === 'videos'
-                      ? 'text-purple-600 border-b-2 border-purple-600'
-                      : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                  >
-                    <VideoCameraIcon className="w-4 h-4 inline mr-1" />
-                    Videos
-                  </button>
-                </div>
+              <div className="es-tabbar" style={{ padding: '0 16px' }}>
+                <button
+                  type="button"
+                  className="es-tab"
+                  aria-selected={activeUploadTab === 'images'}
+                  onClick={() => setActiveUploadTab('images')}
+                >
+                  <PhotoIcon style={{ width: 14, height: 14 }} />
+                  Images
+                </button>
+                <button
+                  type="button"
+                  className="es-tab"
+                  aria-selected={activeUploadTab === 'videos'}
+                  onClick={() => setActiveUploadTab('videos')}
+                >
+                  <VideoCameraIcon style={{ width: 14, height: 14 }} />
+                  Videos
+                </button>
+              </div>
 
-                {/* Uploaded Files Grid */}
-                <div>
-                  {activeUploadTab === 'images' && (
-                    <div className="grid grid-cols-2 gap-2">
-                      {uploadedFiles
-                        .filter(f => f.type === 'image')
-                        .map(file => {
-                          const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
-                          const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-                          const fullUrl = file.url.startsWith('http') ? file.url : `${baseUrl}${file.url}`;
-
-                          return (
+              <section className="es-section">
+                {activeUploadTab === 'images' ? (
+                  <>
+                    {uploadedFiles.filter((f) => f.type === 'image').length > 0 ? (
+                      <div className="es-grid-2">
+                        {uploadedFiles
+                          .filter((f) => f.type === 'image')
+                          .map((file) => (
                             <div
                               key={file.id}
-                              className="relative group aspect-square bg-gray-100 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all"
+                              className="es-upload-item"
                               onClick={() => handleAddUploadedImage(file.url)}
+                              role="button"
+                              tabIndex={0}
                             >
-                              <img
-                                src={fullUrl}
-                                alt={file.filename}
-                                className="w-full h-full object-cover"
-                              />
-                              <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-opacity flex items-center justify-center">
-                                <PlusIcon className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                              </div>
+                              <img src={resolveUploadUrl(file.url)} alt={file.filename} />
                               <button
+                                type="button"
+                                className="es-icon-btn"
+                                style={{ position: 'absolute', top: 5, right: 5 }}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteUpload(file.filename);
                                 }}
-                                className="absolute top-1 right-1 p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                                aria-label="Delete image"
                               >
-                                <XMarkIcon className="w-3 h-3 text-white" />
+                                <XMarkIcon />
                               </button>
                             </div>
-                          );
-                        })}
-                      {uploadedFiles.filter(f => f.type === 'image').length === 0 && (
-                        <div className="col-span-2 text-center py-8 text-gray-400">
-                          <PhotoIcon className="w-12 h-12 mx-auto mb-2" />
-                          <p className="text-sm">No images uploaded yet</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {activeUploadTab === 'videos' && (
-                    <div className="space-y-2">
-                      {uploadedFiles
-                        .filter(f => f.type === 'video')
-                        .map(file => {
-                          const apiBaseUrl = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
-                          const baseUrl = apiBaseUrl.replace(/\/api\/?$/, '');
-                          const fullUrl = file.url.startsWith('http') ? file.url : `${baseUrl}${file.url}`;
-
-                          return (
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="es-empty">
+                        <PhotoIcon />
+                        <div className="es-empty-title">No images yet</div>
+                        <div className="es-empty-body">Drop or browse to upload.</div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {uploadedFiles.filter((f) => f.type === 'video').length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {uploadedFiles
+                          .filter((f) => f.type === 'video')
+                          .map((file) => (
                             <div
                               key={file.id}
-                              className="relative group flex items-center p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-purple-50 hover:ring-2 hover:ring-purple-500 transition-all"
+                              className="es-video-row es-upload-item"
+                              style={{ aspectRatio: 'auto' }}
                               onClick={() => handleAddUploadedVideo(file.url)}
+                              role="button"
+                              tabIndex={0}
                             >
-                              <div className="w-16 h-12 bg-gray-200 rounded flex items-center justify-center mr-3">
-                                <PlayIcon className="w-6 h-6 text-gray-500" />
+                              <div className="es-video-thumb">
+                                <PlayIcon style={{ width: 16, height: 16 }} />
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-gray-700 truncate">{file.filename}</p>
-                                <p className="text-xs text-gray-400">
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, color: 'var(--ink)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {file.filename}
+                                </div>
+                                <div className="es-meta" style={{ marginTop: 2 }}>
                                   {(file.size / (1024 * 1024)).toFixed(2)} MB
-                                </p>
+                                </div>
                               </div>
                               <button
+                                type="button"
+                                className="es-icon-btn"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteUpload(file.filename);
                                 }}
-                                className="p-1 bg-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                                aria-label="Delete video"
                               >
-                                <XMarkIcon className="w-3 h-3 text-white" />
+                                <XMarkIcon />
                               </button>
                             </div>
-                          );
-                        })}
-                      {uploadedFiles.filter(f => f.type === 'video').length === 0 && (
-                        <div className="text-center py-8 text-gray-400">
-                          <VideoCameraIcon className="w-12 h-12 mx-auto mb-2" />
-                          <p className="text-sm">No videos uploaded yet</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="es-empty">
+                        <VideoCameraIcon />
+                        <div className="es-empty-title">No videos yet</div>
+                        <div className="es-empty-body">Drop or browse to upload.</div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            </>
           )}
 
-          {/* Font Family Section */}
+          {/* ── Font family (invoked from text toolbar) ── */}
           {activeSection === 'fontFamily' && (
-            <div className="p-4">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Fonts</h3>
-              <div className="space-y-1">
-                {fontFamilies.map(font => (
-                  <button
-                    key={font}
-                    className="w-full text-left px-4 py-3 hover:bg-gray-100 text-sm rounded transition-colors"
-                    style={{ fontFamily: font }}
-                    onClick={() => editorCallbacks.onFontFamilyChange?.(font)}
-                  >
-                    {getFontDisplayName(font)}
-                  </button>
-                ))}
+            <section className="es-section">
+              <div>
+                <div className="es-section-title"><span>Font family</span></div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {fontFamilies.map((font) => (
+                    <button
+                      key={font}
+                      type="button"
+                      className="es-btn-sm"
+                      style={{
+                        justifyContent: 'flex-start',
+                        height: 40,
+                        padding: '0 14px',
+                        fontFamily: font,
+                        fontSize: 14,
+                        border: '1px solid var(--rule-hair)',
+                      }}
+                      onClick={() => editorCallbacks.onFontFamilyChange?.(font)}
+                    >
+                      {getFontDisplayName(font)}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            </section>
           )}
 
-          {/* Font Color Section */}
+          {/* ── Font color ── */}
           {activeSection === 'fontColor' && (
-            <FontColorSection
-              colors={colors}
-              editorCallbacks={editorCallbacks}
-            />
+            <FontColorSection editorCallbacks={editorCallbacks} />
           )}
 
-          {/* Text Highlight Color Section */}
+          {/* ── Text highlight ── */}
           {activeSection === 'bgColor' && (
-            <BgColorSection
-              colors={colors}
-              editorCallbacks={editorCallbacks}
-            />
+            <BgColorSection editorCallbacks={editorCallbacks} />
           )}
 
-          {/* Element Background Color Section */}
+          {/* ── Element background ── */}
           {activeSection === 'elementBgColor' && (
-            <ElementBgColorSection
-              colors={colors}
-              editorCallbacks={editorCallbacks}
-            />
+            <ElementBgColorSection editorCallbacks={editorCallbacks} />
           )}
 
-          {/* Magic Media Section */}
+          {/* ── Slide background ── */}
+          {activeSection === 'slideBgColor' && <SlideBgColorSection />}
+
+          {/* ── Shape fill ── */}
+          {activeSection === 'shapeFillColor' && <ShapeFillColorSection />}
+
+          {/* ── Shape border ── */}
+          {activeSection === 'shapeBorderColor' && <ShapeBorderColorSection />}
+
+          {/* ── Shape selector (swap shape type) ── */}
+          {activeSection === 'shapeSelector' && <ShapeChangerSection />}
+
+          {/* ── Position (arrange + layers) ── */}
+          {activeSection === 'position' && <PositionPanel />}
+
+          {/* ── Magic media ── */}
           {activeSection === 'magic' && (
-            <div className="p-4">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Magic Media</h3>
-                  <div className="text-sm text-gray-600">AI-powered media generation...</div>
+            <section className="es-section">
+              <div className="es-empty">
+                <SparklesIcon />
+                <div className="es-empty-title">Magic media</div>
+                <div className="es-empty-body">
+                  AI-generated imagery, tailored to your deck tone, will appear here.
                 </div>
               </div>
-            </div>
+            </section>
           )}
 
-          {/* Charts Section */}
+          {/* ── Charts ── two modes: editor (chart selected) / picker ── */}
           {activeSection === 'charts' && (
-            <div className="p-4">
-              <div className="space-y-6">
+            selectedChart ? (
+              <ChartEditorPanel elementId={selectedChart.id} />
+            ) : (
+              <section className="es-section">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Charts</h3>
-                  <div className="text-sm text-gray-600">Chart elements coming soon...</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Apps Section */}
-          {activeSection === 'apps' && (
-            <div className="p-4">
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Apps</h3>
-                  <div className="grid grid-cols-3 gap-3">
-                    {/* App Icons */}
-                    <div className="flex flex-col items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <div className="w-10 h-10 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-lg mb-2 flex items-center justify-center">
-                        <span className="text-white font-bold text-sm">TG</span>
-                      </div>
-                      <span className="text-xs text-gray-600">TypeGradient</span>
-                    </div>
-                    <div className="flex flex-col items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <div className="w-10 h-10 bg-green-500 rounded-lg mb-2 flex items-center justify-center">
-                        <span className="text-white font-bold text-sm">E</span>
-                      </div>
-                      <span className="text-xs text-gray-600">TypeExtrude</span>
-                    </div>
-                    <div className="flex flex-col items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                      <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-500 rounded-lg mb-2 flex items-center justify-center">
-                        <span className="text-white font-bold text-sm">TC</span>
-                      </div>
-                      <span className="text-xs text-gray-600">TypeCraft</span>
-                    </div>
+                  <div className="es-section-title"><span>Add a chart</span></div>
+                  <div className="es-grid-2">
+                    {CHART_TYPES.map((t) => {
+                      const defaults = defaultChartElementProps(t.id);
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className="es-shape-tile"
+                          title={t.label}
+                          onClick={() => handleAddChart(t.id)}
+                        >
+                          <div
+                            className="es-shape-stage"
+                            style={{
+                              // 4:3 stage so line/area/pie all read clearly at
+                              // tile size; bar still looks balanced.
+                              aspectRatio: '4 / 3',
+                              padding: 6,
+                            }}
+                          >
+                            <ChartElement
+                              elementId={`__chart_preview_${t.id}`}
+                              chartType={defaults.chartType}
+                              data={defaults.data}
+                              stacked={defaults.stacked}
+                              donut={defaults.donut}
+                              mode="edit"
+                              preview
+                            />
+                          </div>
+                          <span className="es-shape-label">{t.label}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Recently used</h3>
-                  <div className="text-sm text-gray-600">No recently used apps</div>
+                  <p className="es-meta" style={{ lineHeight: 1.5, marginTop: 4 }}>
+                    Series colors auto-pull from your deck palette. Click any
+                    chart to customize its data, type, and style.
+                  </p>
                 </div>
-              </div>
-            </div>
+              </section>
+            )
           )}
 
-          {/* Element Properties removed - now using floating toolbars */}
+          {/* ── Apps ── */}
+          {activeSection === 'apps' && (
+            <section className="es-section">
+              <div className="es-empty">
+                <CubeIcon />
+                <div className="es-empty-title">Apps</div>
+                <div className="es-empty-body">
+                  Install integrations for stock media, SCORM validators, and brand assets.
+                </div>
+              </div>
+            </section>
+          )}
         </div>
 
-        {/* Save Button */}
-        <div className="p-4 border-t border-gray-200">
+        {/* Footer: save */}
+        <div className="es-footer">
           <SaveButton />
         </div>
       </div>
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────
+// Utilities
+// ──────────────────────────────────────────────
+
+function Spinner() {
+  return (
+    <svg
+      style={{ width: 18, height: 18, animation: 'lp-spin 700ms linear infinite' }}
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }

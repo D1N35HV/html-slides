@@ -3,8 +3,22 @@ import { createPortal } from 'react-dom';
 import { CKEditor } from '@ckeditor/ckeditor5-react';
 import { CustomInlineEditor } from '../editor/CustomInlineEditor';
 import { useStore } from '../store/index';
+import { useShallow } from 'zustand/react/shallow';
 import { ckEditorConfig } from '../config/ckeditor';
 import { CustomCKEditorToolbar } from './CustomCKEditorToolbar';
+
+// Registry of hidden CKEditor instances keyed by element id, so the shared
+// toolbar can fan commands out across every text/heading element in the
+// current multi-selection.
+const hiddenEditorRegistry = new Map<string, any>();
+export function getHiddenEditor(elementId: string) {
+  return hiddenEditorRegistry.get(elementId);
+}
+export function getHiddenEditorsFor(elementIds: string[]) {
+  return elementIds
+    .map((id) => hiddenEditorRegistry.get(id))
+    .filter(Boolean);
+}
 
 interface CKEditorElementProps {
   elementId: string;
@@ -19,7 +33,22 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
   const [hiddenEditorInstance, setHiddenEditorInstance] = useState<any>(null);
   const [currentContent, setCurrentContent] = useState(content);
   const [lastDragTime, setLastDragTime] = useState(0);
-  const { updateTextElement, updateHeadingElement, editingElementId, setEditingElement, globalDragState, selectedElementIds } = useStore();
+  const updateTextElement = useStore((s) => s.updateTextElement);
+  const updateHeadingElement = useStore((s) => s.updateHeadingElement);
+  const setEditingElement = useStore((s) => s.setEditingElement);
+  const editingElementId = useStore((s) => s.editingElementId);
+  const globalDragState = useStore(useShallow((s) => s.globalDragState));
+  const isSelectedFromStore = useStore((s) => s.selectedElementIds.includes(elementId));
+  // Only one toolbar should be rendered across a multi-selection. "Primary"
+  // is selectedElementId when a single element is selected, otherwise the
+  // first id in selectedElementIds.
+  const isPrimarySelected = useStore((s) => {
+    if (s.selectedElementId) return s.selectedElementId === elementId;
+    return s.selectedElementIds[0] === elementId;
+  });
+  // Narrow selector: subscribe only to the specific element this editor renders.
+  // Keeps this component out of the re-render loop when other elements change.
+  const slideEl = useStore((s) => s.slides[s.currentSlide]?.elements?.find(el => el.id === elementId)) as any;
   const editorRef = useRef<HTMLDivElement>(null);
 
   // Helper function to update content based on element type
@@ -33,7 +62,7 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
 
   // Check if this element is currently being edited
   const isEditing = editingElementId === elementId;
-  const isSelected = selectedElementIds.includes(elementId);
+  const isSelected = isSelectedFromStore;
 
   // Track drag state changes to prevent editing after drag
   useEffect(() => {
@@ -138,6 +167,9 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
         }
       }
       if (hiddenEditorInstance) {
+        if (hiddenEditorRegistry.get(elementId) === hiddenEditorInstance) {
+          hiddenEditorRegistry.delete(elementId);
+        }
         try {
           hiddenEditorInstance.destroy().catch((error: any) => {
             console.warn('Error destroying hidden editor on unmount:', error);
@@ -200,6 +232,7 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
   const handleHiddenEditorReady = (editor: any) => {
     console.log('Hidden editor ready', editor);
     setHiddenEditorInstance(editor);
+    hiddenEditorRegistry.set(elementId, editor);
 
     // Select all content in hidden editor so commands apply to everything
     try {
@@ -465,7 +498,10 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
     <>
       {isSelected && !isEditing && mode === 'edit' && (
         <>
-          {hiddenEditorInstance && createPortal(
+          {/* Only the primary-selected element renders the toolbar. All
+              selected text elements still mount their hidden editor so the
+              shared toolbar can fan commands across them. */}
+          {isPrimarySelected && hiddenEditorInstance && createPortal(
             <CustomCKEditorToolbar editor={hiddenEditorInstance} isEditing={true} />,
             document.body
           )}
@@ -496,6 +532,20 @@ export function CKEditorElement({ elementId, content, type, mode = 'edit', backg
       >
         <div
           className="w-full h-full overflow-hidden pointer-events-auto"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent:
+              slideEl?.verticalAlign === 'middle' ? 'center'
+              : slideEl?.verticalAlign === 'bottom' ? 'flex-end'
+              : 'flex-start',
+            paddingTop:    slideEl?.paddingTop    ?? 0,
+            paddingRight:  slideEl?.paddingRight  ?? 0,
+            paddingBottom: slideEl?.paddingBottom ?? 0,
+            paddingLeft:   slideEl?.paddingLeft   ?? 0,
+            boxSizing: 'border-box',
+            height: '100%',
+          }}
           onDoubleClick={(e) => {
             if (mode !== 'edit') return;
             const timeSinceLastDrag = Date.now() - lastDragTime;

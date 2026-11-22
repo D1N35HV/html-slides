@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import Presentation from '../models/Presentation';
+import { thumbnailService } from './ThumbnailService';
 
 // Types for PPT parser output
 interface PPTPosition {
@@ -21,6 +22,7 @@ interface PPTRun {
   underline: boolean | null;
   highlight: string | null;
   color: string | null;
+  letter_spacing: number | null;
 }
 
 interface PPTParagraph {
@@ -32,32 +34,75 @@ interface PPTParagraph {
   alignment: string;
   color: string;
   placeholder_type: string | null;
+  space_before?: number | null;
+  space_after?: number | null;
+  line_spacing?: string | null;
+  indent?: number | null;
+}
+
+// Chart payload emitted by the python parser (matches ChartElement schema
+// modulo id/position/size which are added at element-creation time).
+interface PPTChartPayload {
+  chartType: 'bar' | 'line' | 'pie' | 'area';
+  data: {
+    categories: string[];
+    series: Array<{
+      id: string;
+      label: string;
+      values: Array<number | null>;
+      color?: string;
+    }>;
+  };
+  stacked?: boolean;
+  donut?: boolean;
+  title?: string;
 }
 
 interface PPTObject {
   name: string;
   type: string;
   typenum: number;
+  auto_shape_type?: number;
+  preset_geometry?: string;
+  corner_radius?: { tl: number; tr: number; br: number; bl: number };
+  nvspr_id?: number;
   position_emus: any;
   position: PPTPosition;
   rotation: number;
   text: string[];
   paragraph: PPTParagraph[];
-  fill: { type: string; color?: string } | null;
-  line: { color: string; width: number | null } | null;
+  fill: { type: string; color?: string; stops?: { color: string; position: number }[]; angle?: number } | null;
+  line: { color: string; width: number | null; dash?: 'solid' | 'dashed' | 'dotted' } | null;
   image?: string;
   video?: string;
   audio?: string;
   table?: any[][];
-  crop?: any;
+  chart?: PPTChartPayload;
+  crop?: { left: number; top: number; right: number; bottom: number; width: number; height: number };
   flip_v?: boolean;
   flip_h?: boolean;
+  text_anchor?: 'top' | 'middle' | 'bottom';
+  padding_left?: number;
+  padding_top?: number;
+  padding_right?: number;
+  padding_bottom?: number;
 }
 
 interface PPTBackground {
   type: string | null;
   color: string | null;
   image: string | null;
+}
+
+interface PPTAnimation {
+  spid: number;
+  preset_class: string;
+  preset_id: number;
+  preset_subtype: number;
+  node_type: string;
+  dur_ms: number | null;
+  delay_ms: number;
+  click_group: number;
 }
 
 interface PPTSlide {
@@ -70,6 +115,7 @@ interface PPTSlide {
   };
   background: PPTBackground;
   objects: PPTObject[];
+  animations?: PPTAnimation[];
 }
 
 // Theme extracted from master slide
@@ -93,8 +139,9 @@ interface ParserOutput {
 // Types for our app format
 interface AppElement {
   id: string;
-  type: 'text' | 'heading' | 'image' | 'video' | 'shape';
-  content: string;
+  type: 'text' | 'heading' | 'image' | 'video' | 'shape' | 'chart';
+  content?: string;
+  level?: 1 | 2 | 3 | 4 | 5 | 6;
   position: {
     x: number;
     y: number;
@@ -111,6 +158,52 @@ interface AppElement {
   borderColor?: string;
   borderWidth?: number;
   rotation?: number;
+  // Image crop
+  cropX?: number;
+  cropY?: number;
+  cropWidth?: number;
+  cropHeight?: number;
+  originalWidth?: number;
+  originalHeight?: number;
+  // Image flip
+  flipX?: boolean;
+  flipY?: boolean;
+  objectFit?: string;
+  opacity?: number;
+  // Text layout
+  verticalAlign?: 'top' | 'middle' | 'bottom';
+  paddingTop?: number;
+  paddingRight?: number;
+  paddingBottom?: number;
+  paddingLeft?: number;
+  // Shape gradient
+  gradient?: {
+    type: 'linear' | 'radial';
+    angle?: number;
+    stops: Array<{ position: number; color: string }>;
+  };
+  // Shape geometry
+  cornerRadii?: { tl: number; tr: number; br: number; bl: number };
+  borderDash?: 'solid' | 'dashed' | 'dotted';
+  // Chart fields (when type === 'chart')
+  chartType?: 'bar' | 'line' | 'pie' | 'area';
+  data?: {
+    categories: string[];
+    series: Array<{
+      id: string;
+      label: string;
+      values: Array<number | null>;
+      color?: string;
+    }>;
+  };
+  stacked?: boolean;
+  donut?: boolean;
+  showLegend?: boolean;
+  legendPosition?: 'top' | 'right' | 'bottom';
+  showAxis?: boolean;
+  showGrid?: boolean;
+  showLabels?: boolean;
+  title?: string;
 }
 
 interface AppSlide {
@@ -119,6 +212,8 @@ interface AppSlide {
   backgroundColor?: string;
   backgroundImage?: string;
   backgroundGradient?: string;
+  thumbnailUrl?: string;
+  animations?: PPTAnimation[];
 }
 
 interface TemplateInfo {
@@ -142,6 +237,7 @@ type StreamProgressCallback = (event: {
   totalSlides?: number | undefined;
   slideIndex?: number | undefined;
   slide?: AppSlide | undefined;
+  thumbnailUrl?: string | undefined;
   error?: string | undefined;
 }) => void;
 
@@ -149,7 +245,7 @@ type StreamProgressCallback = (event: {
 class PPTConverterService {
   private pythonPath: string;
   private parserPath: string;
-  private templatesDir: string;
+  private presentationsDir: string;
 
   constructor() {
     // Use system Python with full path to avoid LibreOffice's Python
@@ -177,16 +273,16 @@ class PPTConverterService {
     }
 
     this.parserPath = path.join(__dirname, '../python/pptx/parser.py');
-    this.templatesDir = path.join(__dirname, '../../uploads/templates');
+    this.presentationsDir = path.join(__dirname, '../../uploads/presentations');
 
     console.log('[PPTConverter] Initialized with:');
     console.log('  Python path:', this.pythonPath);
     console.log('  Parser path:', this.parserPath);
-    console.log('  Templates dir:', this.templatesDir);
+    console.log('  Presentations dir:', this.presentationsDir);
 
-    // Ensure templates directory exists
-    if (!fs.existsSync(this.templatesDir)) {
-      fs.mkdirSync(this.templatesDir, { recursive: true });
+    // Ensure presentations directory exists
+    if (!fs.existsSync(this.presentationsDir)) {
+      fs.mkdirSync(this.presentationsDir, { recursive: true });
     }
 
     // Check if parser exists
@@ -312,57 +408,157 @@ class PPTConverterService {
   }
 
   /**
+   * Map preset_geometry string (new parser) or typenum (legacy) to app shapeType.
+   * preset_geometry takes priority — it is more precise than the typenum enum.
+   */
+  private resolveShapeType(obj: PPTObject): string {
+    if (obj.preset_geometry) {
+      const PRESET: Record<string, string> = {
+        rect: 'rectangle',
+        roundRect: 'rectangle',
+        round1Rect: 'rectangle',
+        round2SameRect: 'rectangle',
+        round2DiagRect: 'rectangle',
+        snipRoundRect: 'rectangle',
+        ellipse: 'ellipse',
+        oval: 'ellipse',
+        triangle: 'triangle',
+        rtTriangle: 'triangle',
+        diamond: 'diamond',
+        parallelogram: 'parallelogram',
+        trapezoid: 'trapezoid',
+        pentagon: 'pentagon',
+        hexagon: 'hexagon',
+        heptagon: 'pentagon',
+        octagon: 'hexagon',
+        decagon: 'hexagon',
+        dodecagon: 'hexagon',
+        star4: 'star',
+        star5: 'star',
+        star6: 'star',
+        star7: 'star',
+        star8: 'star',
+        star10: 'star',
+        star12: 'star',
+        star16: 'star',
+        star24: 'star',
+        star32: 'star',
+        rightArrow: 'arrow',
+        leftArrow: 'arrow',
+        upArrow: 'arrow',
+        downArrow: 'arrow',
+        leftRightArrow: 'arrow',
+        upDownArrow: 'arrow',
+        quadArrow: 'arrow',
+        chevron: 'arrow',
+        heart: 'heart',
+        cloud: 'cloud',
+        cloudCallout: 'cloud',
+        line: 'line',
+        straightConnector1: 'line',
+        blockArc: 'ellipse',
+        arc: 'ellipse',
+        donut: 'ellipse',
+      };
+      return PRESET[obj.preset_geometry] ?? 'rectangle';
+    }
+    // Legacy numeric fallback
+    const NUM: Record<number, string> = {
+      1:  'rectangle',
+      2:  'parallelogram',
+      4:  'diamond',
+      5:  'triangle',
+      7:  'callout',
+      9:  'ellipse',
+      11: 'hexagon',
+      12: 'pentagon',
+      13: 'hexagon',
+      16: 'star',
+      17: 'star',
+      18: 'star',
+      32: 'arrow',
+      33: 'arrow',
+      38: 'heart',
+      58: 'cloud',
+    };
+    return (obj.auto_shape_type !== undefined && NUM[obj.auto_shape_type])
+      ? (NUM[obj.auto_shape_type] as string)
+      : 'rectangle';
+  }
+
+  /**
+   * Parse a hex color string that may be 6-digit RRGGBB or 8-digit RRGGBBAA.
+   * Returns { color: '#RRGGBB', opacity?: number }.
+   */
+  private parseHexColor(hex: string): { color: string; opacity?: number } {
+    const raw = hex.startsWith('#') ? hex.slice(1) : hex;
+    if (raw.length === 8) {
+      const alpha = parseInt(raw.slice(6, 8), 16) / 255;
+      return {
+        color: `#${raw.slice(0, 6).toUpperCase()}`,
+        opacity: Math.round(alpha * 100) / 100,
+      };
+    }
+    return { color: `#${raw.toUpperCase()}` };
+  }
+
+  /**
+   * Convert a single PPT run to a styled <span> element.
+   * Merges ALL styles into one span to prevent nested-span overrides.
+   */
+  private convertRunToSpan(run: PPTRun): string {
+    const text = run.text || '';
+    if (!text) return '';
+
+    const styles: string[] = [];
+    const decorations: string[] = [];
+
+    if (run.font_name) {
+      styles.push(`font-family: '${run.font_name}', sans-serif`);
+    }
+    if (run.font_size) {
+      styles.push(`font-size: ${run.font_size}px`);
+    }
+    if (run.bold) {
+      styles.push('font-weight: bold');
+    }
+    if (run.italic) {
+      styles.push('font-style: italic');
+    }
+    if (run.underline) {
+      decorations.push('underline');
+    }
+    if (run.color && run.color !== 'No color') {
+      const c = run.color.startsWith('#') ? run.color : `#${run.color}`;
+      styles.push(`color: ${c}`);
+    }
+    if (run.letter_spacing != null) {
+      styles.push(`letter-spacing: ${run.letter_spacing}px`);
+    }
+    if (decorations.length) {
+      styles.push(`text-decoration: ${decorations.join(' ')}`);
+    }
+
+    if (!styles.length) {
+      return text;
+    }
+    return `<span style="${styles.join('; ')}">${text}</span>`;
+  }
+
+  /**
    * Convert PPT paragraph runs to HTML content
    */
   private convertRunsToHTML(paragraph: PPTParagraph): string {
     if (!paragraph.runs || paragraph.runs.length === 0) {
       return paragraph.text || '';
     }
-
-    let html = '';
-
-    for (const run of paragraph.runs) {
-      let text = run.text || '';
-
-      // Apply formatting
-      if (run.bold) {
-        text = `<strong>${text}</strong>`;
-      }
-      if (run.italic) {
-        text = `<em>${text}</em>`;
-      }
-      if (run.underline) {
-        text = `<u>${text}</u>`;
-      }
-
-      // Apply color
-      if (run.color && run.color !== 'No color' && run.color !== '000000') {
-        const color = run.color.startsWith('#') ? run.color : `#${run.color}`;
-        text = `<span style="color: ${color}">${text}</span>`;
-      }
-
-      // Apply font
-      if (run.font_name || run.font_size) {
-        let style = '';
-        if (run.font_name) {
-          style += `font-family: ${run.font_name};`;
-        }
-        if (run.font_size) {
-          style += `font-size: ${run.font_size}px;`;
-        }
-        text = `<span style="${style}">${text}</span>`;
-      }
-
-      html += text;
-    }
-
-    return html;
+    return paragraph.runs.map(r => this.convertRunToSpan(r)).join('');
   }
 
   /**
    * Convert PPT object to app element format
    */
-  private convertObjectToElement(obj: PPTObject, index: number, baseUrl: string): AppElement | null {
+  private convertObjectToElement(obj: PPTObject, index: number, baseUrl: string): AppElement | AppElement[] | null {
     const id = `element-${uuidv4()}`;
 
     const baseElement = {
@@ -379,21 +575,51 @@ class PPTConverterService {
       rotation: obj.rotation || 0,
     };
 
+    // Chart — emitted by the python parser as type === 'Chart' with a
+    // structured `chart` payload. Falls into a ChartElement directly; the
+    // client picks up auto-themed series colors from extracted document
+    // colors when no explicit series.color is set.
+    if (obj.type === 'Chart' && obj.chart) {
+      const chartElement: AppElement = {
+        ...baseElement,
+        type: 'chart',
+        chartType: obj.chart.chartType,
+        data: obj.chart.data,
+      };
+      if (obj.chart.stacked) chartElement.stacked = true;
+      if (obj.chart.donut) chartElement.donut = true;
+      if (obj.chart.title) chartElement.title = obj.chart.title;
+      return chartElement;
+    }
+
     // Handle different object types
     if (obj.type === 'Picture' && obj.image) {
-      return {
+      const imgElement: AppElement = {
         ...baseElement,
         type: 'image',
-        content: '',
         imageUrl: `${baseUrl}/${obj.image}`,
+        flipX: obj.flip_h || false,
+        flipY: obj.flip_v || false,
       };
+      // Map crop data (2D)
+      if (obj.crop) {
+        const c = obj.crop;
+        const totalW = c.width || 1;
+        const totalH = c.height || 1;
+        imgElement.cropX    = Math.round((c.left  / totalW) * 100);
+        imgElement.cropY    = Math.round((c.top   / totalH) * 100);
+        imgElement.cropWidth  = Math.round(((totalW - c.left - c.right)  / totalW) * 100);
+        imgElement.cropHeight = Math.round(((totalH - c.top  - c.bottom) / totalH) * 100);
+        imgElement.originalWidth  = totalW;
+        imgElement.originalHeight = totalH;
+      }
+      return imgElement;
     }
 
     if (obj.type === 'Video' && obj.video) {
       return {
         ...baseElement,
         type: 'video',
-        content: '',
         videoUrl: `${baseUrl}/${obj.video}`,
       };
     }
@@ -426,6 +652,7 @@ class PPTConverterService {
         content: tableHtml,
       };
     }
+    const elements: AppElement[] = [];
 
     // Handle text/paragraph content
     if (obj.paragraph && obj.paragraph.length > 0) {
@@ -442,15 +669,22 @@ class PPTConverterService {
 
         const paragraphContent = this.convertRunsToHTML(para);
 
-        // Apply alignment
+        // Build paragraph-level style (2B)
+        const paraStyles: string[] = [];
         const alignment = para.alignment || 'left';
+        paraStyles.push(`text-align: ${alignment}`);
+        if (para.space_before != null) paraStyles.push(`margin-top: ${para.space_before}px`);
+        if (para.space_after  != null) paraStyles.push(`margin-bottom: ${para.space_after}px`);
+        if (para.line_spacing != null) paraStyles.push(`line-height: ${para.line_spacing}`);
+        if (para.indent != null)       paraStyles.push(`margin-left: ${para.indent}px`);
+        const paraStyle = paraStyles.length ? ` style="${paraStyles.join('; ')}"` : '';
 
         if (para.bullet && para.bullet_char) {
-          content += `<li style="text-align: ${alignment}">${paragraphContent}</li>`;
+          content += `<li${paraStyle}>${paragraphContent}</li>`;
         } else if (isHeading) {
-          content += `<h${headingLevel} style="text-align: ${alignment}">${paragraphContent}</h${headingLevel}>`;
+          content += `<h${headingLevel}${paraStyle}>${paragraphContent}</h${headingLevel}>`;
         } else {
-          content += `<p style="text-align: ${alignment}">${paragraphContent}</p>`;
+          content += `<p${paraStyle}>${paragraphContent}</p>`;
         }
       }
 
@@ -459,35 +693,92 @@ class PPTConverterService {
         content = `<ul>${content}</ul>`;
       }
 
-      if (!content.trim()) {
-        return null;
+      if (content.trim()) {
+        const textEl: AppElement = {
+          ...baseElement,
+          id: `${id}-text`, // Ensure unique ID if we also add a shape
+          type: isHeading ? 'heading' : 'text',
+          content,
+          zIndex: baseElement.zIndex + 1, // Place text above shape
+        };
+        // Heading elements MUST carry a level field — Joi validation
+        // forbids saving a heading without one. headingLevel is computed
+        // above from the placeholder type (title=1, subTitle=2).
+        if (isHeading) {
+          textEl.level = headingLevel as 1 | 2 | 3 | 4 | 5 | 6;
+        }
+        // Map vertical alignment and padding (2G)
+        if (obj.text_anchor) textEl.verticalAlign = obj.text_anchor;
+        if (obj.padding_left   != null) textEl.paddingLeft   = obj.padding_left;
+        if (obj.padding_top    != null) textEl.paddingTop    = obj.padding_top;
+        if (obj.padding_right  != null) textEl.paddingRight  = obj.padding_right;
+        if (obj.padding_bottom != null) textEl.paddingBottom = obj.padding_bottom;
+        elements.push(textEl);
       }
-
-      return {
-        ...baseElement,
-        type: isHeading ? 'heading' : 'text',
-        content,
-      };
     }
 
-    // Handle shapes with fill
-    if (obj.fill && obj.fill.type === 'solid' && obj.fill.color) {
+    const hasSolidFill = obj.fill && obj.fill.type === 'solid' && obj.fill.color;
+    const hasGradientFill = obj.fill && obj.fill.type === 'gradient' && obj.fill.stops && obj.fill.stops.length > 0;
+    const hasLine = obj.line && obj.line.color && obj.line.color !== 'No Line';
+
+    const isBasicShape = obj.typenum === 1 || hasSolidFill || hasGradientFill || hasLine;
+
+    if (isBasicShape) {
       const shapeElement: AppElement = {
         ...baseElement,
         type: 'shape',
-        content: '',
-        shapeType: 'rectangle',
-        fillColor: obj.fill.color.startsWith('#') ? obj.fill.color : `#${obj.fill.color}`,
+        shapeType: this.resolveShapeType(obj),
       };
 
-      if (obj.line?.color && obj.line.color !== 'No Line') {
-        shapeElement.borderColor = obj.line.color.startsWith('#') ? obj.line.color : `#${obj.line.color}`;
-      }
-      if (obj.line?.width) {
-        shapeElement.borderWidth = obj.line.width / 914400; // Convert EMU to pixels
+      if (hasSolidFill) {
+        const parsed = this.parseHexColor(obj.fill!.color as string);
+        shapeElement.fillColor = parsed.color;
+        if (parsed.opacity !== undefined && parsed.opacity < 1) {
+          shapeElement.opacity = parsed.opacity;
+        }
+      } else if (hasGradientFill) {
+        const firstStop = obj.fill!.stops![0]?.color || '888888';
+        const parsed = this.parseHexColor(firstStop);
+        shapeElement.fillColor = parsed.color;
+        shapeElement.gradient = {
+          type: 'linear',
+          angle: obj.fill!.angle || 0,
+          stops: obj.fill!.stops!.map(s => {
+            const sp = this.parseHexColor(s.color as string);
+            return { position: s.position, color: sp.color };
+          }),
+        };
+      } else {
+        shapeElement.fillColor = 'transparent';
       }
 
-      return shapeElement;
+      if (hasLine) {
+        const lc = obj.line!.color;
+        shapeElement.borderColor = lc.startsWith('#') ? lc : `#${lc}`;
+        if (obj.line!.width) {
+          shapeElement.borderWidth = Math.round(obj.line!.width / 12700 * (96 / 72));
+        } else {
+          shapeElement.borderWidth = 1;
+        }
+        if (obj.line!.dash && obj.line!.dash !== 'solid') {
+          shapeElement.borderDash = obj.line!.dash;
+        }
+      } else {
+        shapeElement.borderColor = 'transparent';
+        shapeElement.borderWidth = 0;
+      }
+
+      if (obj.corner_radius) {
+        shapeElement.cornerRadii = obj.corner_radius;
+      }
+
+      if (hasSolidFill || hasGradientFill || hasLine || elements.length === 0) {
+        elements.push(shapeElement);
+      }
+    }
+
+    if (elements.length > 0) {
+      return elements;
     }
 
     return null;
@@ -521,8 +812,17 @@ class PPTConverterService {
       const element = this.convertObjectToElement(obj, i, baseUrl);
 
       if (element) {
-        slide.elements.push(element);
+        if (Array.isArray(element)) {
+          slide.elements.push(...element);
+        } else {
+          slide.elements.push(element);
+        }
       }
+    }
+
+    // Preserve slide-level animation timeline from the parser
+    if (pptSlide.animations && pptSlide.animations.length > 0) {
+      slide.animations = pptSlide.animations;
     }
 
     return slide;
@@ -542,7 +842,7 @@ class PPTConverterService {
     console.log('  User ID:', userId);
 
     const templateId = uuidv4();
-    const templateFolder = path.join(this.templatesDir, templateId);
+    const templateFolder = path.join(this.presentationsDir, templateId);
     const mediaFolder = path.join(templateFolder, 'media');
 
     console.log('  Template ID:', templateId);
@@ -565,7 +865,7 @@ class PPTConverterService {
       console.log('[PPTConverter] Python parser returned', pptSlides.length, 'slides');
 
       // Base URL for media files
-      const baseUrl = `/uploads/templates/${templateId}/media`;
+      const baseUrl = `/uploads/presentations/${templateId}/media`;
 
       // Convert slides to app format
       console.log('[PPTConverter] Converting slides to app format...');
@@ -575,13 +875,29 @@ class PPTConverterService {
       });
       console.log('[PPTConverter] Converted', appSlides.length, 'slides');
 
-      // Generate thumbnails list (using layout images as thumbnails)
-      const thumbnails = pptSlides.map(slide => {
-        if (slide.background?.image) {
-          return `${baseUrl}/${slide.background.image}`;
+      // Generate thumbnails using ThumbnailService
+      console.log('[PPTConverter] Generating thumbnails...');
+      const thumbnails: string[] = [];
+      for (let i = 0; i < appSlides.length; i++) {
+        const slide = appSlides[i];
+        if (slide) {
+          try {
+            const thumbnailUrl = await thumbnailService.renderSlideThumbnail(
+              templateId,
+              i,
+              {
+                id: slide.id,
+                elements: slide.elements,
+                backgroundColor: slide.backgroundColor,
+                backgroundImage: slide.backgroundImage
+              }
+            );
+            thumbnails.push(thumbnailUrl);
+          } catch (thumbError) {
+            console.error(`[PPTConverter] Failed to generate thumbnail for slide ${i + 1}:`, thumbError);
+          }
         }
-        return null;
-      }).filter(Boolean) as string[];
+      }
       console.log('[PPTConverter] Generated', thumbnails.length, 'thumbnails');
 
       // Save template as a presentation in the database
@@ -619,6 +935,7 @@ class PPTConverterService {
           })),
           backgroundColor: slide.backgroundColor || '#ffffff',
           backgroundImage: slide.backgroundImage,
+          thumbnailUrl: thumbnails[index], // Include thumbnail URL in slide data
           transition: 'slide',
           order: index
         }));
@@ -659,10 +976,7 @@ class PPTConverterService {
         ...(presentationId && { presentationId })
       };
 
-      // Save template info as JSON
-      const infoPath = path.join(templateFolder, 'template.json');
-      fs.writeFileSync(infoPath, JSON.stringify(templateInfo, null, 2));
-      console.log('[PPTConverter] Saved template info to:', infoPath);
+      console.log('[PPTConverter] Template data saved to MongoDB');
 
       console.log('[PPTConverter] Successfully processed PPT!');
       return templateInfo;
@@ -694,7 +1008,7 @@ class PPTConverterService {
     console.log('  User ID:', userId);
 
     const templateId = uuidv4();
-    const templateFolder = path.join(this.templatesDir, templateId);
+    const templateFolder = path.join(this.presentationsDir, templateId);
     const mediaFolder = path.join(templateFolder, 'media');
 
     console.log('  Template ID:', templateId);
@@ -710,7 +1024,7 @@ class PPTConverterService {
     fs.copyFileSync(filePath, pptDestPath);
     console.log('  Copied PPT to:', pptDestPath);
 
-    const baseUrl = `/uploads/templates/${templateId}/media`;
+    const baseUrl = `/uploads/presentations/${templateId}/media`;
 
     try {
       // Step 1: Get slide count and theme using --count mode
@@ -733,21 +1047,42 @@ class PPTConverterService {
       const appSlides: AppSlide[] = [];
 
       console.log(`[PPTConverter] Parsing slide 1/${totalSlides} (initial)...`);
+      let firstThumbnail: string | undefined;
       try {
         const pptSlides = await this.parsePPT(filePath, mediaFolder, [1]);
         if (pptSlides.length > 0 && pptSlides[0]) {
           const appSlide = this.convertSlideToAppFormat(pptSlides[0], baseUrl);
           appSlides.push(appSlide);
+
+          // Generate thumbnail for first slide before emitting progress
+          try {
+            firstThumbnail = await thumbnailService.renderSlideThumbnail(
+              templateId,
+              0,
+              {
+                id: appSlide.id,
+                elements: appSlide.elements,
+                backgroundColor: appSlide.backgroundColor,
+                backgroundImage: appSlide.backgroundImage
+              }
+            );
+            console.log(`[PPTConverter] Generated thumbnail for slide 1: ${firstThumbnail}`);
+          } catch (thumbError) {
+            console.error('[PPTConverter] Failed to generate first slide thumbnail:', thumbError);
+          }
+
           onProgress({
             type: 'slide',
             presentationId: templateId,
             slideIndex: 0,
-            slide: appSlide
+            slide: appSlide,
+            thumbnailUrl: firstThumbnail
           });
         }
       } catch (slideError) {
         console.error(`[PPTConverter] Error parsing slide 1:`, slideError);
       }
+
       // Create initial template info with first slide, return immediately
       const initialTemplateInfo: TemplateInfo = {
         id: templateId,
@@ -756,7 +1091,7 @@ class PPTConverterService {
         slides: [...appSlides],
         slideCount: totalSlides, // Total expected
         createdAt: new Date().toISOString(),
-        thumbnails: appSlides[0]?.backgroundImage ? [appSlides[0].backgroundImage] : [],
+        thumbnails: firstThumbnail ? [firstThumbnail] : [],
         mediaFolder: templateId,
         theme
       };
@@ -764,15 +1099,14 @@ class PPTConverterService {
       // Save first slide to database immediately
       let dbPresentationId: string | undefined;
       if (appSlides.length > 0 && appSlides[0]) {
-        dbPresentationId = await this.createPresentationWithFirstSlide(appSlides[0], originalFilename, userId);
+        dbPresentationId = await this.createPresentationWithFirstSlide(appSlides[0], originalFilename, userId, firstThumbnail);
         if (dbPresentationId) {
           initialTemplateInfo.presentationId = dbPresentationId;
         }
       }
 
-      // Save initial template info
-      const infoPath = path.join(templateFolder, 'template.json');
-      fs.writeFileSync(infoPath, JSON.stringify(initialTemplateInfo, null, 2));
+      // Template data is saved to MongoDB via createPresentationWithFirstSlide
+      console.log('[PPTConverter] Initial template data saved to MongoDB');
 
       // Step 3: Parse remaining slides in background
       if (totalSlides > 1) {
@@ -878,12 +1212,12 @@ class PPTConverterService {
     mediaFolder: string,
     baseUrl: string,
     templateId: string,
-    templateFolder: string,
+    _templateFolder: string,
     appSlides: AppSlide[],
     totalSlides: number,
-    theme: PPTTheme | undefined,
-    originalFilename: string,
-    userId: string,
+    _theme: PPTTheme | undefined,
+    _originalFilename: string,
+    _userId: string,
     onProgress: StreamProgressCallback,
     tempFilePath?: string, // Temp file to clean up when done
     dbPresentationId?: string // DB presentation ID for incremental saving
@@ -900,16 +1234,40 @@ class PPTConverterService {
           const appSlide = this.convertSlideToAppFormat(pptSlides[0], baseUrl);
           appSlides.push(appSlide);
 
+          // Generate thumbnail for this slide
+          let thumbnailUrl: string | undefined;
+          try {
+            thumbnailUrl = await thumbnailService.renderSlideThumbnail(
+              templateId,
+              slideIndex - 1,
+              {
+                id: appSlide.id,
+                elements: appSlide.elements,
+                backgroundColor: appSlide.backgroundColor,
+                backgroundImage: appSlide.backgroundImage
+              }
+            );
+            console.log(`[PPTConverter] Generated thumbnail for slide ${slideIndex}: ${thumbnailUrl}`);
+          } catch (thumbError) {
+            console.error(`[PPTConverter] Failed to generate thumbnail for slide ${slideIndex}:`, thumbError);
+          }
+
           // Save slide to database immediately
           if (dbPresentationId) {
-            await this.addSlideToPresentation(dbPresentationId, appSlide, slideIndex - 1);
+            await this.addSlideToPresentation(dbPresentationId, appSlide, slideIndex - 1, thumbnailUrl);
+          }
+
+          // update thumbnailUrl in appSlide
+          if (thumbnailUrl) {
+            appSlide.thumbnailUrl = thumbnailUrl;
           }
 
           onProgress({
             type: 'slide',
-            presentationId: templateId,
+            presentationId: dbPresentationId || templateId,
             slideIndex: slideIndex - 1,
-            slide: appSlide
+            slide: appSlide,
+            thumbnailUrl
           });
         }
       } catch (slideError) {
@@ -919,22 +1277,8 @@ class PPTConverterService {
 
     onProgress({ type: 'complete', presentationId: templateId });
 
-    // Update template.json with all slides
-    const thumbnails = appSlides.map(s => s.backgroundImage).filter(Boolean) as string[];
-    const finalInfo: TemplateInfo = {
-      id: templateId,
-      name: path.basename(originalFilename, path.extname(originalFilename)),
-      originalFilename,
-      slides: appSlides,
-      slideCount: appSlides.length,
-      createdAt: new Date().toISOString(),
-      thumbnails,
-      mediaFolder: templateId,
-      theme
-    };
-
-    fs.writeFileSync(path.join(templateFolder, 'template.json'), JSON.stringify(finalInfo, null, 2));
-    await this.saveTemplateToDatabase(appSlides, originalFilename, userId);
+    // All slides are already saved to MongoDB incrementally via addSlideToPresentation
+    console.log('[PPTConverter] All slides saved to MongoDB');
 
     // Clean up temp file after background parsing
     if (tempFilePath && fs.existsSync(tempFilePath)) {
@@ -952,14 +1296,15 @@ class PPTConverterService {
   private async createPresentationWithFirstSlide(
     firstSlide: AppSlide,
     originalFilename: string,
-    userId: string
+    userId: string,
+    thumbnailUrl?: string
   ): Promise<string | undefined> {
     if (!userId || userId === 'anonymous') return undefined;
 
     try {
       const presentationName = path.basename(originalFilename, path.extname(originalFilename));
 
-      const dbSlide = this.convertToDbSlide(firstSlide, 0);
+      const dbSlide = this.convertToDbSlide(firstSlide, 0, thumbnailUrl);
 
       const presentation = new Presentation({
         title: presentationName,
@@ -981,18 +1326,16 @@ class PPTConverterService {
     }
   }
 
-  /**
-   * Add a single slide to an existing presentation in the database
-   */
   private async addSlideToPresentation(
     presentationId: string,
     slide: AppSlide,
-    slideIndex: number
+    slideIndex: number,
+    thumbnailUrl?: string
   ): Promise<void> {
     if (!presentationId) return;
 
     try {
-      const dbSlide = this.convertToDbSlide(slide, slideIndex);
+      const dbSlide = this.convertToDbSlide(slide, slideIndex, thumbnailUrl);
 
       await Presentation.updateOne(
         { _id: presentationId },
@@ -1010,7 +1353,7 @@ class PPTConverterService {
   /**
    * Convert AppSlide to database slide format
    */
-  private convertToDbSlide(slide: AppSlide, index: number) {
+  private convertToDbSlide(slide: AppSlide, index: number, thumbnailUrl?: string) {
     return {
       id: slide.id,
       title: `Slide ${index + 1}`,
@@ -1040,95 +1383,87 @@ class PPTConverterService {
           if (el.fillColor) dbElement.fillColor = el.fillColor;
           if (el.borderColor) dbElement.borderColor = el.borderColor;
           if (el.borderWidth) dbElement.borderWidth = el.borderWidth;
+        } else if (el.type === 'chart') {
+          dbElement.chartType = el.chartType || 'bar';
+          dbElement.data = el.data || { categories: [], series: [] };
+          if (el.stacked) dbElement.stacked = true;
+          if (el.donut) dbElement.donut = true;
+          if (el.title) dbElement.title = el.title;
+          if (el.legendPosition) dbElement.legendPosition = el.legendPosition;
+          if (el.showLegend !== undefined) dbElement.showLegend = el.showLegend;
+          if (el.showAxis !== undefined) dbElement.showAxis = el.showAxis;
+          if (el.showGrid !== undefined) dbElement.showGrid = el.showGrid;
+          if (el.showLabels !== undefined) dbElement.showLabels = el.showLabels;
         }
 
         return dbElement;
       }),
       backgroundColor: slide.backgroundColor || '#ffffff',
       backgroundImage: slide.backgroundImage,
+      thumbnailUrl, // Include thumbnail URL in slide data
       transition: 'slide',
       order: index
     };
   }
 
-  /**
-   * Save all template slides to database (legacy method for batch save)
-   */
-  private async saveTemplateToDatabase(
-    appSlides: AppSlide[],
-    originalFilename: string,
-    userId: string
-  ): Promise<string | undefined> {
-    if (!userId || userId === 'anonymous') return undefined;
-
-    try {
-      const presentationName = path.basename(originalFilename, path.extname(originalFilename));
-
-      const dbSlides = appSlides.map((slide, index) => this.convertToDbSlide(slide, index));
-
-      const presentation = new Presentation({
-        title: presentationName,
-        description: `Imported from ${originalFilename}`,
-        slides: dbSlides,
-        theme: 'default',
-        isPublic: false,
-        tags: ['imported', 'template', 'ppt'],
-        createdBy: userId
-      });
-
-      const savedPresentation = await presentation.save();
-      return (savedPresentation._id as any).toString();
-    } catch (dbError) {
-      console.error('[PPTConverter] Failed to save to database:', dbError);
-    }
-    return undefined;
-  }
 
   /**
    * Get all templates
    */
   async getTemplates(): Promise<TemplateInfo[]> {
-    const templates: TemplateInfo[] = [];
+    try {
+      const presentations = await Presentation.find({ tags: 'template' })
+        .sort({ createdAt: -1 })
+        .lean() as any[];
 
-    if (!fs.existsSync(this.templatesDir)) {
-      return templates;
+      return presentations.map(p => ({
+        id: p._id.toString(),
+        presentationId: p._id.toString(),
+        name: p.title,
+        originalFilename: `${p.title}.pptx`,
+        slides: (p.slides || []).map((s: any) => ({
+          id: s.id,
+          elements: s.elements || [],
+          backgroundColor: s.backgroundColor,
+          backgroundImage: s.backgroundImage,
+        })),
+        slideCount: p.slides?.length || 0,
+        createdAt: p.createdAt?.toISOString() || new Date().toISOString(),
+        thumbnails: (p.slides || []).map((s: any) => s.thumbnailUrl).filter(Boolean),
+        mediaFolder: p._id.toString(),
+      }));
+    } catch (error) {
+      console.error('[PPTConverter] Failed to get templates from database:', error);
+      return [];
     }
-
-    const folders = fs.readdirSync(this.templatesDir);
-
-    for (const folder of folders) {
-      const templatePath = path.join(this.templatesDir, folder, 'template.json');
-
-      if (fs.existsSync(templatePath)) {
-        try {
-          const templateData = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
-          templates.push(templateData);
-        } catch (error) {
-          console.error(`Failed to read template ${folder}:`, error);
-        }
-      }
-    }
-
-    // Sort by creation date, newest first
-    templates.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    return templates;
   }
 
   /**
    * Get a specific template by ID
    */
   async getTemplate(templateId: string): Promise<TemplateInfo | null> {
-    const templatePath = path.join(this.templatesDir, templateId, 'template.json');
-
-    if (!fs.existsSync(templatePath)) {
-      return null;
-    }
-
     try {
-      return JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
+      const presentation = await Presentation.findById(templateId).lean() as any;
+      if (!presentation) return null;
+
+      return {
+        id: presentation._id.toString(),
+        presentationId: presentation._id.toString(),
+        name: presentation.title,
+        originalFilename: `${presentation.title}.pptx`,
+        slides: (presentation.slides || []).map((s: any) => ({
+          id: s.id,
+          elements: s.elements || [],
+          backgroundColor: s.backgroundColor,
+          backgroundImage: s.backgroundImage,
+        })),
+        slideCount: presentation.slides?.length || 0,
+        createdAt: presentation.createdAt?.toISOString() || new Date().toISOString(),
+        thumbnails: (presentation.slides || []).map((s: any) => s.thumbnailUrl).filter(Boolean),
+        mediaFolder: presentation._id.toString(),
+      };
     } catch (error) {
-      console.error(`Failed to read template ${templateId}:`, error);
+      console.error(`[PPTConverter] Failed to read template ${templateId}:`, error);
       return null;
     }
   }
@@ -1137,32 +1472,25 @@ class PPTConverterService {
    * Delete a template
    */
   async deleteTemplate(templateId: string): Promise<boolean> {
-    const templateFolder = path.join(this.templatesDir, templateId);
-
-    if (!fs.existsSync(templateFolder)) {
-      return false;
-    }
-
     try {
-      // Try to get the template info to find the presentation ID
-      const templatePath = path.join(templateFolder, 'template.json');
-      if (fs.existsSync(templatePath)) {
-        try {
-          const templateData = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
-          if (templateData.presentationId) {
-            // Delete the presentation from the database
-            await Presentation.findByIdAndDelete(templateData.presentationId);
-            console.log('[PPTConverter] Deleted presentation from database:', templateData.presentationId);
-          }
-        } catch (readError) {
-          console.error('[PPTConverter] Failed to read template for deletion:', readError);
-        }
+      const result = await Presentation.findByIdAndDelete(templateId);
+      if (!result) {
+        console.log(`[PPTConverter] Template ${templateId} not found in database`);
+        return false;
       }
 
-      fs.rmSync(templateFolder, { recursive: true, force: true });
+      console.log('[PPTConverter] Deleted template from database:', templateId);
+
+      // Also delete media folder if it exists
+      const templateFolder = path.join(this.presentationsDir, templateId);
+      if (fs.existsSync(templateFolder)) {
+        fs.rmSync(templateFolder, { recursive: true, force: true });
+        console.log('[PPTConverter] Deleted template media folder:', templateFolder);
+      }
+
       return true;
     } catch (error) {
-      console.error(`Failed to delete template ${templateId}:`, error);
+      console.error(`[PPTConverter] Failed to delete template ${templateId}:`, error);
       return false;
     }
   }
@@ -1172,55 +1500,31 @@ class PPTConverterService {
    * First tries to load from database (if presentationId exists), then falls back to template.json
    */
   async getTemplateSlide(templateId: string, slideIndex: number): Promise<AppSlide | null> {
-    const template = await this.getTemplate(templateId);
+    if (slideIndex < 0) return null;
 
-    if (!template || slideIndex < 0) {
-      return null;
-    }
-
-    // Try to load from database first (if presentationId exists)
-    if (template.presentationId) {
-      try {
-        const presentation = await Presentation.findById(template.presentationId).lean() as any;
-        if (presentation && presentation.slides && slideIndex < presentation.slides.length) {
-          const dbSlide = presentation.slides[slideIndex];
-          if (dbSlide) {
-            console.log(`[PPTConverter] Loaded slide ${slideIndex} from database`);
-            return {
-              id: `slide-${uuidv4()}`,
-              elements: (dbSlide.elements || []).map((element: any) => ({
-                ...element,
-                id: `element-${uuidv4()}`,
-              })),
-              backgroundColor: dbSlide.backgroundColor,
-              backgroundImage: dbSlide.backgroundImage,
-            };
-          }
-        }
-      } catch (dbError) {
-        console.error('[PPTConverter] Error loading slide from database:', dbError);
-        // Fall through to file-based loading
+    try {
+      const presentation = await Presentation.findById(templateId).lean() as any;
+      if (!presentation || !presentation.slides || slideIndex >= presentation.slides.length) {
+        return null;
       }
-    }
 
-    // Fallback to template.json file
-    if (slideIndex >= template.slides.length) {
+      const dbSlide = presentation.slides[slideIndex];
+      if (!dbSlide) return null;
+
+      console.log(`[PPTConverter] Loaded slide ${slideIndex} from database`);
+      return {
+        id: `slide-${uuidv4()}`,
+        elements: (dbSlide.elements || []).map((element: any) => ({
+          ...element,
+          id: `element-${uuidv4()}`,
+        })),
+        backgroundColor: dbSlide.backgroundColor,
+        backgroundImage: dbSlide.backgroundImage,
+      };
+    } catch (error) {
+      console.error(`[PPTConverter] Error loading slide ${slideIndex} from database:`, error);
       return null;
     }
-
-    const slide = template.slides[slideIndex];
-    if (!slide) {
-      return null;
-    }
-    console.log(`[PPTConverter] Loaded slide ${slideIndex} from template.json`);
-    return {
-      ...slide,
-      id: `slide-${uuidv4()}`,
-      elements: (slide.elements || []).map(element => ({
-        ...element,
-        id: `element-${uuidv4()}`,
-      })),
-    };
   }
 }
 

@@ -9,7 +9,8 @@ interface EditableElementProps {
 
 export function EditableElement({ elementId, content, type }: EditableElementProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const { updateTextElement, updateHeadingElement } = useStore();
+  const updateTextElement = useStore((s) => s.updateTextElement);
+  const updateHeadingElement = useStore((s) => s.updateHeadingElement);
   const elementRef = useRef<HTMLDivElement>(null);
 
   // Helper function to update content based on element type

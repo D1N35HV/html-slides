@@ -38,20 +38,18 @@ export const createSlideSlice: StateCreator<
     isDragging: false,
     hasMoved: false,
   },
-  alignmentGuides: {
-    activeElementId: null,
-    activePosition: null,
-    activeSize: null,
-    isActive: false,
-  },
   addSlide: () => {
-    set((state) => ({
-      slides: [...state.slides, { 
-        id: `slide-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
-        elements: [] 
-      }],
-      currentSlide: state.slides.length,
-    }));
+    set((state) => {
+      const source = state.slides[state.currentSlide];
+      return {
+        slides: [...state.slides, {
+          id: `slide-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          elements: [],
+          ...(source?.backgroundColor ? { backgroundColor: source.backgroundColor } : {}),
+        }],
+        currentSlide: state.slides.length,
+      };
+    });
     // Save to history after adding slide
     setTimeout(() => {
       get().saveToHistory();
@@ -77,11 +75,11 @@ export const createSlideSlice: StateCreator<
         slides: safeSlides,
         currentSlide: Math.min(currentIndex, Math.max(0, safeSlides.length - 1)),
         selectedElementId: null,
-  selectedElementIds: [],
+        selectedElementIds: [],
         editingElementId: null
       };
     });
-    
+
     // Save to history after a short delay to ensure the state is properly set
     setTimeout(() => {
       const state = get();
@@ -94,7 +92,7 @@ export const createSlideSlice: StateCreator<
     set((state) => ({
       slides: state.slides.map(slide =>
         slide.id === slideId
-          ? { ...slide, backgroundColor }
+          ? { ...slide, backgroundColor, thumbnailExpired: true } // Flag thumbnail for regeneration
           : slide
       )
     }));
@@ -104,7 +102,7 @@ export const createSlideSlice: StateCreator<
     set((state) => ({
       slides: state.slides.map((slide, index) =>
         index === slideIndex
-          ? { ...slide, ...updates }
+          ? { ...slide, ...updates, thumbnailExpired: true } // Flag thumbnail for regeneration
           : slide
       )
     }));

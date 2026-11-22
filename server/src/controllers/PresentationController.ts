@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import PresentationService from '../services/PresentationService';
 import { Types } from 'mongoose';
+import { ScormExportService } from '../services/ScormExportService';
+import path from 'path';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -353,6 +355,37 @@ class PresentationController {
         message: 'Failed to retrieve statistics',
         error: error instanceof Error ? error.message : 'Unknown error'
       });
+    }
+  }
+
+  // Export to SCORM
+  public async exportScorm(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const presentationId = req.params['id'];
+      if (!presentationId) {
+        res.status(400).json({ success: false, message: 'Presentation ID is required' });
+        return;
+      }
+      
+      const scormService = new ScormExportService(
+        path.join(process.cwd(), 'temp_exports'),
+        path.join(process.cwd(), '../dist')
+      );
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="course-${presentationId}.zip"`);
+
+      await scormService.exportPresentation(presentationId, res);
+      
+    } catch (error) {
+      console.error('Error exporting SCORM:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to export SCORM package',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   }
 }

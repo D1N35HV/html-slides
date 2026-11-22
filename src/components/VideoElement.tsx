@@ -56,7 +56,7 @@ function getEmbedUrl(url: string): string | null {
 
 export function VideoElement({ elementId, videoUrl }: VideoElementProps) {
   const [currentVideoUrl, setCurrentVideoUrl] = useState(resolveMediaUrl(videoUrl) || '');
-  const { setSelectedElement } = useStore();
+  const setSelectedElement = useStore((s) => s.setSelectedElement);
 
   useEffect(() => {
     setCurrentVideoUrl(resolveMediaUrl(videoUrl) || '');

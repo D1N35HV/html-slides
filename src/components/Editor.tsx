@@ -4,7 +4,8 @@ import { useLayoutStore } from '../store/layoutStore';
 
 // Legacy placeholder component (not actively used). Displays current slide debug info.
 export function Editor() {
-  const { slides, currentSlide } = useStore();
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
   const { isEditorMinimized } = useLayoutStore();
 
   if (isEditorMinimized) return null;

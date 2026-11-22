@@ -171,6 +171,49 @@ class AuthController {
     }
   }
 
+  // Change password
+  public changePassword = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const userId = req.user!.id;
+      const { currentPassword, newPassword } = req.body;
+
+      const user = await User.findById(userId).select('+password');
+      if (!user) {
+        res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+        return;
+      }
+
+      const isCurrentValid = await user.comparePassword(currentPassword);
+      if (!isCurrentValid) {
+        res.status(401).json({
+          success: false,
+          code: 'INVALID_CURRENT_PASSWORD',
+          message: 'Current password is incorrect'
+        });
+        return;
+      }
+
+      user.password = newPassword;
+      user.lastPasswordChangedAt = new Date();
+      await user.save();
+
+      res.status(200).json({
+        success: true,
+        message: 'Password updated successfully'
+      });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update password',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  }
+
   // Refresh token
   public refreshToken = async (req: Request, res: Response): Promise<void> => {
     try {

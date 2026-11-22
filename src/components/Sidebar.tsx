@@ -4,7 +4,11 @@ import { useLayoutStore } from '../store/layoutStore';
 import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 
 export function Sidebar() {
-  const { slides, currentSlide, setCurrentSlide, addSlide, removeSlide } = useStore();
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const setCurrentSlide = useStore((s) => s.setCurrentSlide);
+  const addSlide = useStore((s) => s.addSlide);
+  const removeSlide = useStore((s) => s.removeSlide);
   const { isEditorMinimized } = useLayoutStore();
 
   if (isEditorMinimized) {
@@ -68,16 +72,18 @@ export function Sidebar() {
                         className="text-xs text-gray-600 truncate bg-gray-50 px-1.5 py-0.5 rounded"
                       >
                         {element.type === 'heading' ? (
-                          <span 
+                          <span
                             className="font-semibold"
-                            dangerouslySetInnerHTML={{ 
-                              __html: (element.content || '').replace(/<[^>]*>/g, '').substring(0, 50) 
+                            dangerouslySetInnerHTML={{
+                              __html: (element.content || '').replace(/<[^>]*>/g, '').substring(0, 50)
                             }}
                           />
-                        ) : (
-                          <span dangerouslySetInnerHTML={{ 
-                            __html: (element.content || '').replace(/<[^>]*>/g, '').substring(0, 50) 
+                        ) : element.type === 'text' ? (
+                          <span dangerouslySetInnerHTML={{
+                            __html: (element.content || '').replace(/<[^>]*>/g, '').substring(0, 50)
                           }} />
+                        ) : (
+                          <span className="italic">{element.type}</span>
                         )}
                       </div>
                     ))}

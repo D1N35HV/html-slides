@@ -15,6 +15,7 @@ export interface IUser extends Document {
     notifications: boolean;
   };
   lastLoginAt?: Date;
+  lastPasswordChangedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
   
@@ -84,6 +85,9 @@ const UserSchema = new Schema<IUser>({
   lastLoginAt: {
     type: Date,
     index: true
+  },
+  lastPasswordChangedAt: {
+    type: Date
   }
 }, {
   timestamps: true,

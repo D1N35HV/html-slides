@@ -34,6 +34,14 @@ router.put(
   AuthController.updateProfile
 );
 
+// POST /api/auth/password - Change password
+router.post(
+  '/password',
+  authenticateToken,
+  ValidationService.validateMiddleware(ValidationService.passwordChangeSchema),
+  AuthController.changePassword
+);
+
 // POST /api/auth/refresh - Refresh access token
 router.post(
   '/refresh',

@@ -15,17 +15,17 @@ export interface ValidationResult {
 // Custom Joi extension to validate URLs that can be either absolute URIs or relative paths
 const urlOrPath = Joi.string().custom((value, helpers) => {
   if (!value) return value;
-  
+
   // Allow absolute URLs (http, https, data URIs)
   if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')) {
     return value;
   }
-  
+
   // Allow relative paths starting with /
   if (value.startsWith('/')) {
     return value;
   }
-  
+
   return helpers.error('string.uriOrPath');
 }, 'URL or relative path').messages({
   'string.uriOrPath': '{{#label}} must be a valid URI or a relative path starting with /'
@@ -35,7 +35,7 @@ class ValidationService {
   // Define element and slide schemas BEFORE presentation schemas to avoid initialization order issues
   public static elementSchema = Joi.object({
     id: Joi.string().required(),
-    type: Joi.string().valid('text', 'heading', 'image', 'video', 'shape').required(),
+    type: Joi.string().valid('text', 'heading', 'image', 'video', 'shape', 'chart').required(),
     position: Joi.object({
       x: Joi.number().required(),
       y: Joi.number().required()
@@ -66,13 +66,33 @@ class ValidationService {
     borderRadius: Joi.number().min(0).optional(),
     opacity: Joi.number().min(0).max(1).optional(),
     filter: Joi.string().optional(),
+    flipX: Joi.boolean().optional(),
+    flipY: Joi.boolean().optional(),
+    cropX: Joi.number().optional().allow(null).custom((value) => {
+      if (value === null || value === undefined) return undefined;
+      return Math.max(0, Math.min(100, value));
+    }),
+    cropY: Joi.number().optional().allow(null).custom((value) => {
+      if (value === null || value === undefined) return undefined;
+      return Math.max(0, Math.min(100, value));
+    }),
+    cropWidth: Joi.number().optional().allow(null).custom((value) => {
+      if (value === null || value === undefined) return undefined;
+      return Math.max(0, Math.min(100, value));
+    }),
+    cropHeight: Joi.number().optional().allow(null).custom((value) => {
+      if (value === null || value === undefined) return undefined;
+      return Math.max(0, Math.min(100, value));
+    }),
+    originalWidth: Joi.number().min(0).optional().allow(null),
+    originalHeight: Joi.number().min(0).optional().allow(null),
     videoUrl: urlOrPath.when('type', { is: 'video', then: Joi.required(), otherwise: Joi.forbidden() }),
     autoplay: Joi.boolean().optional(),
     controls: Joi.boolean().optional(),
     muted: Joi.boolean().optional(),
     loop: Joi.boolean().optional(),
     poster: urlOrPath.optional(),
-    shapeType: Joi.string().valid('rectangle','circle','triangle','arrow','diamond','pentagon','hexagon','star','heart','cloud','callout','parallelogram').when('type', { is: 'shape', then: Joi.required(), otherwise: Joi.forbidden() }),
+    shapeType: Joi.string().valid('rectangle', 'circle', 'triangle', 'arrow', 'diamond', 'pentagon', 'hexagon', 'star', 'heart', 'cloud', 'callout', 'parallelogram').when('type', { is: 'shape', then: Joi.required(), otherwise: Joi.forbidden() }),
     fillColor: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
     borderColor: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
     borderWidth: Joi.number().min(0).optional(),
@@ -81,7 +101,56 @@ class ValidationService {
       type: Joi.string().valid('linear', 'radial').required(),
       colors: Joi.array().items(Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/)).min(2).required(),
       direction: Joi.number().min(0).max(360).optional()
-    }).optional()
+    }).optional(),
+
+    // Chart fields. Each is forbidden when type !== 'chart' so the union
+    // doesn't silently accept stray chart props on, say, image elements.
+    // Series colors persist user-explicit overrides only (Q11 hybrid
+    // resolution) — auto-derived palette colors aren't stored.
+    chartType: Joi.string().valid('bar', 'line', 'pie', 'area').when('type', {
+      is: 'chart', then: Joi.required(), otherwise: Joi.forbidden()
+    }),
+    data: Joi.object({
+      categories: Joi.array().items(Joi.string().allow('')).required(),
+      series: Joi.array().items(Joi.object({
+        id: Joi.string().required(),
+        label: Joi.string().allow('').required(),
+        // Cell values are number-or-null. Empty cells use null (gap),
+        // numeric cells store the parsed value.
+        values: Joi.array().items(Joi.number().allow(null)).required(),
+        color: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional()
+      })).min(1).required()
+    }).when('type', { is: 'chart', then: Joi.required(), otherwise: Joi.forbidden() }),
+    primarySeriesId: Joi.string().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    stacked: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    donut: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    showLegend: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    legendPosition: Joi.string().valid('top', 'right', 'bottom').when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    showAxis: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    showGrid: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    showLabels: Joi.boolean().when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    title: Joi.string().allow('').max(200).when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    }),
+    textColor: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).when('type', {
+      is: 'chart', then: Joi.optional(), otherwise: Joi.forbidden()
+    })
   });
 
   public static slideSchema = Joi.object({
@@ -90,6 +159,7 @@ class ValidationService {
     elements: Joi.array().items(ValidationService.elementSchema).optional(),
     backgroundColor: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
     backgroundImage: urlOrPath.optional(),
+    thumbnailUrl: Joi.string().optional(),
     transition: Joi.string().optional(),
     order: Joi.number().min(0).required()
   });
@@ -136,6 +206,13 @@ class ValidationService {
       autoSave: Joi.boolean().optional(),
       notifications: Joi.boolean().optional()
     }).optional()
+  }).min(1);
+
+  public static passwordChangeSchema = Joi.object({
+    currentPassword: Joi.string().required(),
+    newPassword: Joi.string().min(8).max(200).required()
+      .invalid(Joi.ref('currentPassword'))
+      .messages({ 'any.invalid': 'New password must be different from the current password' })
   });
 
   // Query validation schemas
@@ -179,8 +256,8 @@ class ValidationService {
       if (!result.isValid) {
         res.status(400).json({
           success: false,
-            message: 'Validation failed',
-            errors: result.errors
+          message: 'Validation failed',
+          errors: result.errors
         });
         return;
       }

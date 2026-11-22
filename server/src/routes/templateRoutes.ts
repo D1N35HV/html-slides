@@ -46,7 +46,7 @@ const pptUpload = multer({
   storage: pptStorage,
   fileFilter: pptFileFilter,
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max for PPT files
+    fileSize: 500 * 1024 * 1024, // 500MB max for PPT files
   }
 });
 

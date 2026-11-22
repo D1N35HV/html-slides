@@ -78,4 +78,10 @@ router.delete(
   PresentationController.removeCollaborator
 );
 
+// GET /api/presentations/:id/export/scorm - Export presentation to SCORM
+router.get(
+  '/:id/export/scorm',
+  PresentationController.exportScorm
+);
+
 export default router;

@@ -6,7 +6,8 @@ import { Preview } from './Preview';
 import { SlideStrip } from './SlideStrip';
 import { Toaster, toast } from 'react-hot-toast';
 import apiService from '../services/ApiService';
-import { useStore } from '../store/index.ts';
+import { useStore } from '../store/index';
+import collaborationService from '../services/CollaborationService';
 
 interface ApiPresentationResponse {
   _id?: string;
@@ -18,9 +19,32 @@ interface ApiPresentationResponse {
 export const EditorPage: React.FC = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { slides, currentSlide, setCurrentSlide, addSlide, setSlides, clearHistory } = useStore();
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const setCurrentSlide = useStore((s) => s.setCurrentSlide);
+  const addSlide = useStore((s) => s.addSlide);
+  const setSlides = useStore((s) => s.setSlides);
+  const clearHistory = useStore((s) => s.clearHistory);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const cleanup = collaborationService.onPPTProgress((event) => {
+      if (event.type === 'slide' && event.slide && event.presentationId === id) {
+        const storeState = useStore.getState();
+        const currentSlides = storeState.slides;
+        const exists = currentSlides.some(s => s.id === event.slide!.id);
+        
+        if (!exists) {
+          console.log('[EditorPage] Auto-loading incoming slide:', event.slide.id);
+          storeState.setSlides([...currentSlides, event.slide], storeState.currentSlide);
+        }
+      }
+    });
+    return () => {
+      if (cleanup) cleanup();
+    };
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +84,7 @@ export const EditorPage: React.FC = () => {
 
         const normalized = rawSlides
           .filter(s => !!s) // remove nulls
-          .sort((a: any,b: any) => (a?.order||0) - (b?.order||0))
+          .sort((a: any, b: any) => (a?.order || 0) - (b?.order || 0))
           .map((s: any, slideIndex: number) => {
             let slideElements: any = s.elements;
             // Allow elements to be a JSON string
@@ -97,6 +121,17 @@ export const EditorPage: React.FC = () => {
                 }
                 if (base.type === 'image') {
                   base.imageUrl = el.imageUrl || el.url || el.src || '';
+                  base.opacity = el.opacity;
+                  base.objectFit = el.objectFit;
+                  base.flipX = el.flipX;
+                  base.flipY = el.flipY;
+                  // Crop properties
+                  base.cropX = el.cropX;
+                  base.cropY = el.cropY;
+                  base.cropWidth = el.cropWidth;
+                  base.cropHeight = el.cropHeight;
+                  base.originalWidth = el.originalWidth;
+                  base.originalHeight = el.originalHeight;
                 }
                 if (base.type === 'video') {
                   base.videoUrl = el.videoUrl || el.url || '';
@@ -115,6 +150,7 @@ export const EditorPage: React.FC = () => {
               elements,
               backgroundColor: s.backgroundColor || undefined,
               backgroundImage: s.backgroundImage || undefined,
+              thumbnailUrl: s.thumbnailUrl || undefined,
               transition: s.transition || undefined,
               transitionSpeed: s.transitionSpeed || undefined
             };
@@ -122,10 +158,10 @@ export const EditorPage: React.FC = () => {
 
         const safeSlides = normalized.length > 0 ? normalized : [{ id: `slide-${Date.now()}`, elements: [] }];
         console.log('[EditorPage] Hydrating store with slides:', safeSlides);
-        
+
         // Clear history first to avoid any issues with previous state
         clearHistory();
-        
+
         // Use the proper setSlides action instead of direct state manipulation
         setSlides(safeSlides, 0);
 
@@ -149,10 +185,33 @@ export const EditorPage: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="h-screen flex flex-col items-center justify-center gap-4 text-gray-600">
-        <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" />
-        <p>Loading presentation...</p>
-        <button onClick={() => navigate('/')} className="text-sm text-indigo-600 hover:underline">Back to dashboard</button>
+      <div className="lp-root" style={editorStatusStyle}>
+        <div style={{ display: 'grid', gap: 18, placeItems: 'center', maxWidth: 320 }}>
+          <div
+            aria-hidden
+            style={{
+              width: 24,
+              height: 24,
+              border: '1.5px solid var(--rule-strong)',
+              borderTopColor: 'var(--accent)',
+              borderRadius: '50%',
+              animation: 'lp-spin 640ms linear infinite',
+            }}
+          />
+          <div className="mono" style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-faint)' }}>
+            opening deck
+          </div>
+          <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-muted)', textAlign: 'center', lineHeight: 1.5 }}>
+            Hydrating slides and reconnecting to the session…
+          </p>
+          <button
+            onClick={() => navigate('/')}
+            className="lp-btn-ghost focus-ring"
+            style={{ marginTop: 4 }}
+          >
+            ← Back to library
+          </button>
+        </div>
         <Toaster position="bottom-right" />
       </div>
     );
@@ -160,28 +219,52 @@ export const EditorPage: React.FC = () => {
 
   if (error) {
     return (
-      <div className="h-screen flex flex-col items-center justify-center gap-4 text-red-600">
-        <p>{error}</p>
-        <button onClick={() => navigate('/')} className="text-sm text-indigo-600 hover:underline">Back to dashboard</button>
+      <div className="lp-root" style={editorStatusStyle}>
+        <div style={{ display: 'grid', gap: 14, maxWidth: 440, textAlign: 'left' }}>
+          <div className="mono" style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'oklch(0.55 0.18 27)' }}>
+            couldn't open this deck
+          </div>
+          <h2 className="display" style={{ margin: 0, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--ink)' }}>
+            Something went wrong on load.
+          </h2>
+          <p style={{ margin: 0, fontSize: 14, color: 'var(--ink-muted)', lineHeight: 1.5 }}>
+            {error}
+          </p>
+          <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+            <button onClick={() => window.location.reload()} className="lp-btn-primary focus-ring" style={{ width: 'auto', paddingInline: 18 }}>
+              Try again
+            </button>
+            <button onClick={() => navigate('/')} className="lp-btn-secondary focus-ring">
+              Back to library
+            </button>
+          </div>
+        </div>
         <Toaster position="bottom-right" />
       </div>
     );
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
+    <div style={{ height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column', background: '#fbfbf9', overflow: 'hidden' }}>
       <Toolbar />
-      <div className="flex-1 flex overflow-hidden">
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         <ElementsSidebar />
-        <div className="flex-1 flex flex-col w-3/4">
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <Preview />
-          {/* New Slide Strip Component */}
-          <SlideStrip className="h-24" />
+          <SlideStrip />
         </div>
       </div>
       <Toaster position="bottom-right" />
     </div>
   );
+};
+
+const editorStatusStyle: React.CSSProperties = {
+  minHeight: '100vh',
+  display: 'grid',
+  placeItems: 'center',
+  padding: 32,
+  background: 'var(--paper)',
 };
 
 export default EditorPage;

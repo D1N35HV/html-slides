@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useLayoutStore } from '../store/layoutStore';
 import { useStore } from '../store';
+import { getHiddenEditorsFor } from './CKEditorElement';
 import { 
   Bold, Italic, Underline, Strikethrough, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
@@ -26,7 +27,13 @@ interface CustomCKEditorToolbarProps {
 
 export const CustomCKEditorToolbar: React.FC<CustomCKEditorToolbarProps> = ({ editor, isEditing }) => {
   const { setActiveSidebarPanel, setEditorCallbacks } = useLayoutStore();
-  const { selectedElementId, slides, currentSlide, updateTextElement, updateHeadingElement } = useStore();
+  const selectedElementId = useStore((s) => s.selectedElementId);
+  const updateTextElement = useStore((s) => s.updateTextElement);
+  const updateHeadingElement = useStore((s) => s.updateHeadingElement);
+  // Narrow to the selected element only — toolbar doesn't need full slide list.
+  const selectedElement = useStore((s) =>
+    selectedElementId ? s.slides[s.currentSlide]?.elements.find(el => el.id === selectedElementId) : null
+  );
   const [fontFamily, setFontFamily] = useState('League Gothic');
   const [fontSize, setFontSize] = useState(56);
   const [isBold, setIsBold] = useState(false);
@@ -38,16 +45,37 @@ export const CustomCKEditorToolbar: React.FC<CustomCKEditorToolbarProps> = ({ ed
   const [bgColor, setBgColor] = useState<string | null>(null);
   const [elementBgColor, setElementBgColor] = useState<string>('transparent');
 
-  // Get the selected element to read its background color
-  const selectedElement = selectedElementId 
-    ? slides[currentSlide]?.elements.find(el => el.id === selectedElementId)
-    : null;
-
   const executeCommand = (commandName: string, value?: any) => {
-    if (editor) {
-      editor.execute(commandName, value);
-      editor.editing.view.focus();
+    if (!editor) return;
+    // Gather every text/heading element in the current selection and run
+    // the command on each one's hidden editor so multi-selection edits apply
+    // to all of them at once. The primary `editor` is always included so
+    // single-selection behaviour is unchanged.
+    const store: any = useStore.getState();
+    const slide = store.slides[store.currentSlide];
+    const textIds: string[] = (store.selectedElementIds || []).filter((id: string) => {
+      const el = slide?.elements?.find((e: any) => e.id === id);
+      return el?.type === 'text' || el?.type === 'heading';
+    });
+    const editors = getHiddenEditorsFor(textIds);
+    const targets = editors.length > 0 ? editors : [editor];
+    for (const ed of targets) {
+      // Select all content in each hidden editor so the command applies to
+      // the whole text block, then execute.
+      try {
+        const root = ed.model.document.getRoot();
+        if (root && root.childCount > 0) {
+          const range = ed.model.createRangeIn(root);
+          ed.model.change((writer: any) => writer.setSelection(range));
+        }
+      } catch { /* noop */ }
+      try {
+        ed.execute(commandName, value);
+      } catch (err) {
+        console.warn('executeCommand failed on editor:', err);
+      }
     }
+    editor.editing.view.focus();
   };
 
   // Register callbacks for sidebar interactions
@@ -67,19 +95,20 @@ export const CustomCKEditorToolbar: React.FC<CustomCKEditorToolbarProps> = ({ ed
       },
       onElementBgColorChange: (color) => {
         setElementBgColor(color);
-        // Get fresh state from store to avoid stale closure
-        const store = useStore.getState();
-        const currentElement = store.selectedElementId 
-          ? store.slides[store.currentSlide]?.elements.find(el => el.id === store.selectedElementId)
-          : null;
-        
-        if (store.selectedElementId && currentElement) {
-          if (currentElement.type === 'text') {
-            store.updateTextElement(store.selectedElementId, { backgroundColor: color });
-          } else if (currentElement.type === 'heading') {
-            store.updateHeadingElement(store.selectedElementId, { backgroundColor: color });
-          }
-        }
+        // Apply to every text/heading element in the current selection.
+        // Falls back to the single selectedElementId when no multi-selection.
+        const store: any = useStore.getState();
+        const slide = store.slides[store.currentSlide];
+        if (!slide) return;
+        const ids: string[] = (store.selectedElementIds && store.selectedElementIds.length > 0)
+          ? store.selectedElementIds
+          : (store.selectedElementId ? [store.selectedElementId] : []);
+        ids.forEach((id: string) => {
+          const el = slide.elements?.find((e: any) => e.id === id);
+          if (!el) return;
+          if (el.type === 'text') store.updateTextElement(id, { backgroundColor: color });
+          else if (el.type === 'heading') store.updateHeadingElement(id, { backgroundColor: color });
+        });
       }
     });
   }, [editor]);
@@ -155,13 +184,17 @@ export const CustomCKEditorToolbar: React.FC<CustomCKEditorToolbarProps> = ({ ed
   };
 
   return (
-    <div 
+    <div
       className="custom-ckeditor-toolbar fixed top-[72px] z-50 bg-white rounded-lg shadow-lg border border-gray-200 flex items-center gap-2 px-4 py-2 overflow-x-auto max-w-[calc(100vw-380px)]"
       style={{
         left: 'calc(320px + (100vw - 320px) / 2)',
         transform: 'translateX(-50%)'
       }}
-      onMouseDown={(e) => e.preventDefault()} // Prevent losing focus from editor
+      // preventDefault keeps the editor focused (no canvas blur) and
+      // stopPropagation prevents the click from bubbling through the React
+      // tree to slide-level handlers that could clear the multi-selection.
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Font Family */}
       <div className="relative group min-w-[120px]">

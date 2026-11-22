@@ -1,15 +1,99 @@
 import React from 'react';
-import { SparklesIcon } from '@heroicons/react/24/outline';
-import { Link } from 'react-router-dom';
 
-const EmptyState: React.FC = () => (
-  <div className="flex flex-col items-center justify-center py-24 text-center max-w-md mx-auto">
-    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-100 to-brand-300 flex items-center justify-center shadow-inner mb-6">
-      <SparklesIcon className="w-8 h-8 text-brand-700" />
+interface EmptyStateProps {
+  onCreate?: () => void;
+  onImport?: () => void;
+}
+
+const EmptyState: React.FC<EmptyStateProps> = ({ onCreate, onImport }) => (
+  <div
+    style={{
+      paddingBlock: 'clamp(48px, 8vw, 96px)',
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+      gap: 'clamp(32px, 5vw, 64px)',
+      alignItems: 'center',
+      maxWidth: 960,
+    }}
+  >
+    <div>
+      <div
+        className="mono"
+        style={{
+          fontSize: 11,
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+          color: 'var(--ink-faint)',
+        }}
+      >
+        Library is empty
+      </div>
+      <h2
+        className="display"
+        style={{
+          fontSize: 28,
+          lineHeight: 1.15,
+          fontWeight: 600,
+          letterSpacing: '-0.025em',
+          color: 'var(--ink)',
+          margin: '14px 0 0',
+          maxWidth: '16ch',
+        }}
+      >
+        Drop a deck to get started.
+      </h2>
+      <p
+        style={{
+          marginTop: 16,
+          fontSize: 14.5,
+          color: 'var(--ink-muted)',
+          lineHeight: 1.55,
+          maxWidth: '42ch',
+        }}
+      >
+        Bring in a <span className="mono">.pptx</span> and we'll parse every slide, preserve your
+        fonts and shapes, and give you a canvas to tidy up. Exports to SCORM when you're ready.
+      </p>
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 28, flexWrap: 'wrap' }}>
+        {onImport && (
+          <button onClick={onImport} className="lp-btn-primary" style={{ width: 'auto', paddingInline: 22 }}>
+            Import a PPTX
+          </button>
+        )}
+        {onCreate && (
+          <button onClick={onCreate} className="lp-btn-secondary">
+            Start blank
+          </button>
+        )}
+      </div>
+
+      <p className="mono" style={{ marginTop: 20, fontSize: 11.5, color: 'var(--ink-faint)' }}>
+        Tip: press <span style={{ color: 'var(--ink)' }}>⌘N</span> any time to create a deck.
+      </p>
     </div>
-    <h2 className="text-xl font-bold text-slate-800 tracking-tight mb-3">Create your first presentation</h2>
-    <p className="text-slate-600 text-sm leading-relaxed mb-6">Design stunning slides collaboratively. Organize ideas quickly with drag & drop and rich text editing.</p>
-    <Link to="/create" className="px-5 py-2.5 rounded-lg bg-brand-600 text-white font-semibold shadow hover:bg-brand-500 focus:ring-2 focus:ring-brand-400">New Presentation</Link>
+
+    {/* Quiet visual hint — a placeholder library of 4 card silhouettes */}
+    <div aria-hidden style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      {[0, 1, 2, 3].map((i) => (
+        <div
+          key={i}
+          style={{
+            aspectRatio: '16 / 10',
+            background: 'var(--paper-sunk)',
+            border: '1px dashed var(--rule-strong)',
+            borderRadius: 2,
+            display: 'grid',
+            placeItems: 'center',
+            transform: `translateY(${i % 2 === 0 ? -4 : 4}px)`,
+          }}
+        >
+          <span className="mono" style={{ fontSize: 11, color: 'var(--ink-ghost)', letterSpacing: '0.08em' }}>
+            {String(i + 1).padStart(2, '0')} · empty
+          </span>
+        </div>
+      ))}
+    </div>
   </div>
 );
 

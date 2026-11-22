@@ -75,10 +75,10 @@
 
 /* Image overrides - make images fit 100% of their containers */
 .reveal img {
-  max-width: 100% !important;
-  max-height: 100% !important;
-  width: 100% !important;
-  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: fill !important;
   border: none !important;
   box-shadow: none !important;
@@ -92,6 +92,40 @@
   -moz-user-select: none !important;
   -ms-user-select: none !important;
   user-select: none !important;
+}
+
+/* Cropped images - override all constraints to allow explicit sizing */
+/* .reveal img.cropped-image,
+.reveal .slides img.cropped-image,
+.reveal .slides section img.cropped-image {
+  max-width: none !important;
+  max-height: none !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: none !important;
+  position: absolute !important;
+} */
+
+/* Crop mode - allow overflow so full image can be shown */
+.crop-mode-active,
+.crop-mode-active~*,
+.content-area:has(.crop-mode-active) {
+  overflow: visible !important;
+}
+
+/* Ensure parent containers allow overflow during crop mode */
+.reveal .slides section:has(.crop-mode-active),
+.reveal .slides section .content-area:has(.crop-mode-active) {
+  overflow: visible !important;
+}
+
+/* Default content-area overflow hidden, but visible when crop mode */
+.content-area {
+  overflow: hidden;
+}
+
+.content-area:has(.crop-mode-active) {
+  overflow: visible !important;
 }
 
 /* Video and iframe overrides - make them fill 100% of their containers */

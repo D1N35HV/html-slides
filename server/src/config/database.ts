@@ -35,7 +35,7 @@ const config: Config = {
   rateLimitWindowMs: parseInt(process.env['RATE_LIMIT_WINDOW_MS'] || '900000'),
   rateLimitMaxRequests: parseInt(process.env['RATE_LIMIT_MAX_REQUESTS'] || '100'),
   rateLimitDisabled: process.env['RATE_LIMIT_DISABLED'] === '1' || (process.env['NODE_ENV'] || 'development') === 'development',
-  maxFileSize: process.env['MAX_FILE_SIZE'] || '50MB',
+  maxFileSize: process.env['MAX_FILE_SIZE'] || '500MB',
   uploadPath: process.env['UPLOAD_PATH'] || 'uploads/',
   logLevel: process.env['LOG_LEVEL'] || 'info',
   bcryptRounds: parseInt(process.env['BCRYPT_ROUNDS'] || '12'),

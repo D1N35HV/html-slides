@@ -13,7 +13,16 @@ interface User {
     autoSave: boolean;
     notifications: boolean;
   };
+  createdAt?: string;
+  lastLoginAt?: string;
+  lastPasswordChangedAt?: string;
 }
+
+export type ProfilePatch = {
+  name?: string;
+  avatar?: string;
+  preferences?: Partial<User['preferences']>;
+};
 
 interface AuthState {
   user: User | null;
@@ -166,11 +175,34 @@ export function useAuth() {
     setAuthState(prev => ({ ...prev, error: null }));
   }, []);
 
+  // Update profile / preferences via PUT /auth/me
+  const updateProfile = useCallback(async (patch: ProfilePatch): Promise<User> => {
+    const response = await apiService.updateProfile(patch);
+    if (!response.success || !response.data) {
+      throw new Error(response.message || 'Failed to update profile');
+    }
+    const nextUser = response.data as User;
+    setAuthState(prev => ({ ...prev, user: nextUser }));
+    return nextUser;
+  }, []);
+
+  // Change password via POST /auth/password
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string): Promise<void> => {
+    const response = await apiService.changePassword(currentPassword, newPassword);
+    if (!response.success) {
+      const err: any = new Error(response.message || 'Failed to change password');
+      err.code = (response as any).code;
+      throw err;
+    }
+  }, []);
+
   return {
     ...authState,
     login,
     register,
     logout,
-    clearError
+    clearError,
+    updateProfile,
+    changePassword
   };
 }

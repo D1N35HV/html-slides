@@ -14,6 +14,7 @@ import templateRoutes from './routes/templateRoutes';
 import { errorHandler, notFoundHandler } from './middleware/errorMiddleware';
 import CollaborationServer from './realtime/CollaborationServer';
 import thumbnailService from './services/ThumbnailService';
+import thumbnailGeneratorJob from './services/ThumbnailGeneratorJob';
 
 class Server {
   private app: express.Application;
@@ -140,6 +141,10 @@ class Server {
       // Initialize thumbnail service (Puppeteer browser)
       await thumbnailService.initialize();
       console.log('🖼️ Thumbnail service initialized.');
+
+      // Start background thumbnail generation job
+      thumbnailGeneratorJob.start();
+      console.log('🔄 Thumbnail generation job started.');
 
       // Graceful shutdown
       const gracefulShutdown = async (signal: string) => {

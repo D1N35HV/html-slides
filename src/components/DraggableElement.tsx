@@ -10,7 +10,8 @@ interface DraggableElementProps {
 }
 
 export function DraggableElement({ elementId, children, position }: DraggableElementProps) {
-  const { updateElementPosition, editingElementId } = useStore();
+  const updateElementPosition = useStore((s) => s.updateElementPosition);
+  const editingElementId = useStore((s) => s.editingElementId);
   const scale = useRevealScale();
   const nodeRef = useRef<HTMLDivElement>(null);
 

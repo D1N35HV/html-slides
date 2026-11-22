@@ -1,45 +1,47 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/index.ts';
-import { CloudArrowUpIcon, CheckIcon, ExclamationTriangleIcon, UserIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { useAuth } from '../hooks/useAuth.ts';
-import { LoginModal } from './LoginModal.tsx';
 import { apiService } from '../services/ApiService.ts';
 
 interface SaveButtonProps {
   className?: string;
-  minimal?: boolean; // compact header mode
+  /** Compact pill for the top toolbar */
+  minimal?: boolean;
 }
 
-export function SaveButton({ className = '', minimal = false }: SaveButtonProps) {
-  const store = useStore();
-  const slides = store.slides;
-  const getRemotePatch = store.getRemotePatch;
-  const { isAuthenticated, user } = useAuth();
-  const [isSaving, setIsSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
-  const [statusText, setStatusText] = useState('');
-  const lastSignatureRef = useRef<string>('');
-  const autoTimerRef = useRef<number | null>(null);
-  const inflightRef = useRef<Promise<any> | null>(null);
-  const [showLoginModal, setShowLoginModal] = useState(false);
+type Status = 'idle' | 'dirty' | 'saving' | 'saved' | 'error' | 'needs-auth';
 
-  const computeSignature = (data: any) => {
-    try {
-      return JSON.stringify(data);
-    } catch {
-      return Math.random().toString(36);
-    }
+export function SaveButton({ className = '', minimal = false }: SaveButtonProps) {
+  const slides = useStore((s) => s.slides);
+  const getRemotePatch = useStore((s) => s.getRemotePatch);
+  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+
+  const [status, setStatus] = useState<Status>('idle');
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [, tick] = useState(0); // drives the "x ago" relative label
+
+  const lastSigRef = useRef<string>('');
+  const autoTimer = useRef<number | null>(null);
+  const inflight = useRef<Promise<any> | null>(null);
+
+  // Re-render every 20s so the relative time stays fresh
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 20_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const computeSig = (data: any) => {
+    try { return JSON.stringify(data); } catch { return Math.random().toString(36); }
   };
 
-  // Build presentation payload (shared)
   const buildPayload = () => {
     const existingTitle = localStorage.getItem('currentPresentationTitle');
     return {
-      title: existingTitle || `Presentation ${new Date().toLocaleDateString()}`,
-      description: existingTitle ? 'Updated with Slide Builder' : 'Created with Slide Builder',
+      title: existingTitle || `Deck ${new Date().toLocaleDateString()}`,
+      description: existingTitle ? 'Updated in Slide Bolt' : 'Created in Slide Bolt',
       slides: slides.map((slide, index) => ({
         id: slide.id,
         title: `Slide ${index + 1}`,
@@ -48,273 +50,230 @@ export function SaveButton({ className = '', minimal = false }: SaveButtonProps)
         backgroundImage: slide.backgroundImage || undefined,
         transition: (slide as any).transition || 'slide',
         transitionSpeed: (slide as any).transitionSpeed || 'default',
-        order: index
+        thumbnailUrl: slide.thumbnailUrl || undefined,
+        order: index,
       })),
       theme: 'default',
       isPublic: false,
-      tags: ['presentation', 'slides']
     };
   };
 
-  const handleSave = useCallback(async () => {
-    if (isSaving) return;
+  const doCreate = useCallback(async () => {
+    const result = await apiService.createPresentation(buildPayload());
+    if (result.data?._id) {
+      localStorage.setItem('currentPresentationId', result.data._id);
+    }
+    return result;
+  }, [slides]);
 
-    // Check authentication first
+  const doUpdate = useCallback(async (id: string) => {
+    const result = await apiService.updatePresentation(id, buildPayload() as any);
+    if (!result.success) throw new Error(result.message || 'Update failed');
+    if (result.data?.title) {
+      localStorage.setItem('currentPresentationTitle', result.data.title);
+    }
+    return result;
+  }, [slides]);
+
+  const handleClick = useCallback(async () => {
     if (!isAuthenticated) {
-      setShowLoginModal(true);
+      navigate('/login', { state: { from: window.location.pathname } });
       return;
     }
-
-    setIsSaving(true);
-    setSaveError(null);
-    setStatusText('Saving…');
-
+    if (status === 'saving') return;
+    setStatus('saving');
     try {
-      const presentationData = buildPayload();
-
-      // Call API to save presentation
-      const result = await apiService.createPresentation(presentationData);
-      
-  setLastSaved(new Date());
-  setDirty(false);
-  setStatusText('');
-
-      // Store the presentation ID for future updates
-      if (result.data?._id) {
-        localStorage.setItem('currentPresentationId', result.data._id);
-      }
-
-    } catch (error) {
-      console.error('Save error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      setSaveError(errorMessage);
-      setStatusText('Save failed');
-      
-      toast.error(`Failed to save: ${errorMessage}`, {
-        duration: 5000,
-        position: 'top-right',
-        icon: '❌'
-      });
-    } finally {
-      setIsSaving(false);
+      const id = localStorage.getItem('currentPresentationId');
+      if (id) await doUpdate(id);
+      else await doCreate();
+      setLastSaved(new Date());
+      setStatus('saved');
+    } catch (err: any) {
+      console.error('Save error:', err);
+      setStatus('error');
+      toast.error(`Save failed — ${err?.message || 'unknown error'}`);
     }
-  }, [isAuthenticated, isSaving, slides]);
+  }, [isAuthenticated, navigate, status, doCreate, doUpdate]);
 
-  const handleUpdate = useCallback(async () => {
-    const presentationId = localStorage.getItem('currentPresentationId');
-    if (!presentationId) {
-      // If no ID, create new presentation
-      await handleSave();
-      return;
-    }
-
-    setIsSaving(true);
-    setSaveError(null);
-    setStatusText('Saving…');
-
-    try {
-      const presentationData = buildPayload();
-
-      const result = await apiService.updatePresentation(presentationId, presentationData as any);
-
-      if (!result.success) {
-        throw new Error(result.message || 'Failed to update presentation');
-      }
-
-  setLastSaved(new Date());
-  setDirty(false);
-  setStatusText('');
-
-      // Persist title once we have it
-      if (result.data?.title) {
-        localStorage.setItem('currentPresentationTitle', result.data.title);
-      }
-
-    } catch (error) {
-      console.error('Update error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      setSaveError(errorMessage);
-      setStatusText('Save failed');
-      
-      toast.error(`Failed to update: ${errorMessage}`, {
-        duration: 5000,
-        position: 'top-right',
-        icon: '❌'
-      });
-    } finally {
-      setIsSaving(false);
-    }
-  }, [slides, handleSave]);
-
-  // Auto-save logic (debounced like Canva)
+  // Autosave (2s debounce)
   useEffect(() => {
-  if (!isAuthenticated) return; // don't autosave when not logged in
-  if (getRemotePatch && getRemotePatch()) return; // skip autosave for remote changes
-    const signature = computeSignature(slides);
-    if (signature !== lastSignatureRef.current) {
-      lastSignatureRef.current = signature;
-      setDirty(true);
-      setStatusText('Unsaved changes…');
-      if (autoTimerRef.current) window.clearTimeout(autoTimerRef.current);
-      autoTimerRef.current = window.setTimeout(async () => {
-        if (isSaving) return; // skip if a save in progress
+    if (!isAuthenticated) { setStatus('needs-auth'); return; }
+    if (getRemotePatch && getRemotePatch()) return;
+    const sig = computeSig(slides);
+    if (sig !== lastSigRef.current) {
+      lastSigRef.current = sig;
+      if (status !== 'saving') setStatus('dirty');
+      if (autoTimer.current) window.clearTimeout(autoTimer.current);
+      autoTimer.current = window.setTimeout(async () => {
+        if (status === 'saving' || inflight.current) return;
+        setStatus('saving');
         try {
-          if (inflightRef.current) return; // a queued save already
-          const hasId = !!localStorage.getItem('currentPresentationId');
-          inflightRef.current = hasId ? handleUpdate() : handleSave();
-          await inflightRef.current;
+          const id = localStorage.getItem('currentPresentationId');
+          inflight.current = id ? doUpdate(id) : doCreate();
+          await inflight.current;
+          setLastSaved(new Date());
+          setStatus('saved');
+        } catch (err: any) {
+          console.error('Autosave error:', err);
+          setStatus('error');
         } finally {
-          inflightRef.current = null;
+          inflight.current = null;
         }
-      }, 2000); // 2s idle
+      }, 2000);
     }
-    return () => {
-      if (autoTimerRef.current) window.clearTimeout(autoTimerRef.current);
-    };
-  }, [slides, isAuthenticated, handleUpdate, handleSave, isSaving, getRemotePatch]);
+    return () => { if (autoTimer.current) window.clearTimeout(autoTimer.current); };
+  }, [slides, isAuthenticated, getRemotePatch, doCreate, doUpdate, status]);
 
-  // Periodic safety save every 60s if dirty but user keeps typing
-  useEffect(() => {
-  if (!isAuthenticated) return;
-  if (getRemotePatch && getRemotePatch()) return; // skip periodic save for remote changes
-    const interval = window.setInterval(() => {
-      if (dirty && !isSaving) {
-        const hasId = !!localStorage.getItem('currentPresentationId');
-        hasId ? handleUpdate() : handleSave();
-      }
-    }, 60000);
-    return () => window.clearInterval(interval);
-  }, [dirty, isSaving, isAuthenticated, handleUpdate, handleSave, getRemotePatch]);
+  const label = labelFor(status, lastSaved);
 
-  const getSaveButtonContent = () => {
-    if (isSaving) {
-      return (
-        <>
-          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-          <span>Saving...</span>
-        </>
-      );
-    }
-
-    if (saveError) {
-      const hasId = !!localStorage.getItem('currentPresentationId');
-      return (
-        <>
-          <ExclamationTriangleIcon className="w-4 h-4" />
-          <span>{hasId ? 'Retry Update' : 'Retry Save'}</span>
-        </>
-      );
-    }
-
-    if (lastSaved) {
-      return (
-        <>
-          <CheckIcon className="w-4 h-4" />
-          <span>Update</span>
-        </>
-      );
-    }
-
+  if (minimal) {
     return (
-      <>
-        <CloudArrowUpIcon className="w-4 h-4" />
-        <span>Save to Cloud</span>
-      </>
+      <button
+        onClick={handleClick}
+        disabled={status === 'saving'}
+        title={label.title}
+        aria-label={label.title}
+        className={`focus-ring ${className}`}
+        style={minimalPill(status)}
+      >
+        <StatusGlyph status={status} />
+        <span style={{ fontSize: 11.5, letterSpacing: '0.02em' }} className="mono">
+          {label.short}
+        </span>
+      </button>
     );
-  };
-
-  const handleClick = () => {
-    // Check authentication first
-    if (!isAuthenticated) {
-      setShowLoginModal(true);
-      return;
-    }
-
-    const presentationId = localStorage.getItem('currentPresentationId');
-    // Always try update if we have an ID (even after an error) to avoid duplicate creations
-    if (presentationId) {
-      handleUpdate();
-      return;
-    }
-    handleSave();
-  };
+  }
 
   return (
-    <>
-  <div className={`flex items-center gap-3 ${className}`}>
-        <button
-          onClick={handleClick}
-          disabled={isSaving}
-          className={`
-            flex items-center gap-2 px-3 h-9 rounded-md font-medium text-sm transition
-            border shadow-sm
-            ${isSaving
-              ? 'bg-blue-500 text-white border-blue-500 cursor-wait'
-              : saveError
-              ? 'bg-red-50 text-red-600 border-red-300 hover:bg-red-100'
-              : dirty
-              ? 'bg-blue-50 text-blue-700 border-blue-300 hover:bg-blue-100'
-              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}
-            focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-400
-          `}
-          title={
-            !isAuthenticated
-              ? 'Please log in to save'
-              : saveError 
-              ? `Error: ${saveError}` 
-              : lastSaved 
-              ? `Last saved: ${lastSaved.toLocaleTimeString()}`
-              : 'Save presentation to MongoDB'
-          }
-        >
-          {minimal ? (
-            // In minimal mode show only relevant icon / short label
-            <>
-              {isSaving ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
-              ) : saveError ? (
-                <ExclamationTriangleIcon className="w-4 h-4" />
-              ) : dirty ? (
-                <CloudArrowUpIcon className="w-4 h-4" />
-              ) : (
-                <CheckIcon className="w-4 h-4" />
-              )}
-              <span className="sr-only">
-                {saveError ? 'Save failed' : isSaving ? 'Saving' : dirty ? 'Unsaved changes' : 'All changes saved'}
-              </span>
-            </>
-          ) : (
-            getSaveButtonContent()
-          )}
-        </button>
+    <button
+      onClick={handleClick}
+      disabled={status === 'saving'}
+      className={`focus-ring ${className}`}
+      style={fullButton(status)}
+      title={label.title}
+    >
+      <StatusGlyph status={status} />
+      <span>{label.full}</span>
+    </button>
+  );
+}
 
-        {!minimal && (
-          <>
-            {/* Authentication Status */}
-            {!isAuthenticated && (
-              <div className="flex items-center gap-1 text-sm text-amber-600">
-                <ExclamationCircleIcon className="w-4 h-4" />
-                <span>Login required</span>
-              </div>
-            )}
-            <span className={`text-xs ${saveError ? 'text-red-500' : isSaving ? 'text-blue-600' : dirty ? 'text-amber-600' : 'text-gray-500'}`}>
-              {statusText || (lastSaved ? `Saved ${lastSaved.toLocaleTimeString()}` : (dirty ? 'Unsaved changes…' : ''))}
-            </span>
-          </>
-        )}
+function labelFor(status: Status, lastSaved: Date | null) {
+  switch (status) {
+    case 'saving':   return { short: 'saving',    full: 'Saving…',            title: 'Saving…' };
+    case 'saved':    return { short: relative(lastSaved), full: `Saved ${relative(lastSaved)}`, title: `Last saved ${lastSaved?.toLocaleTimeString() || ''}` };
+    case 'dirty':    return { short: 'unsaved',  full: 'Unsaved changes',    title: 'You have unsaved changes' };
+    case 'error':    return { short: 'retry',    full: 'Retry save',         title: 'The last save failed. Click to try again.' };
+    case 'needs-auth': return { short: 'sign in', full: 'Sign in to save', title: 'Sign in to enable autosave and persistence' };
+    case 'idle':
+    default:         return { short: 'ready',    full: 'Save',               title: 'Save deck' };
+  }
+}
 
-        {saveError && (
-          <span className="text-sm text-red-500" title={saveError}>
-            Save failed
-          </span>
-        )}
-      </div>
+function relative(d: Date | null): string {
+  if (!d) return 'now';
+  const diff = Date.now() - d.getTime();
+  if (diff < 5000) return 'just now';
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return d.toLocaleTimeString();
+}
 
-      {/* Login Modal */}
-      <LoginModal 
-        isOpen={showLoginModal}
-        onClose={() => setShowLoginModal(false)}
+function minimalPill(status: Status): React.CSSProperties {
+  const base: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
+    height: 28,
+    paddingInline: 10,
+    background: 'transparent',
+    border: '1px solid var(--rule-hair)',
+    borderRadius: 2,
+    cursor: 'pointer',
+    color: 'var(--ink-muted)',
+    transition: 'border-color 120ms ease, color 120ms ease, background 120ms ease',
+  };
+  if (status === 'error') {
+    return { ...base, color: 'oklch(0.5 0.18 27)', borderColor: 'oklch(0.58 0.18 27 / 0.5)' };
+  }
+  if (status === 'saving' || status === 'dirty') {
+    return { ...base, color: 'var(--ink)', borderColor: 'var(--rule-strong)' };
+  }
+  if (status === 'needs-auth') {
+    return { ...base, color: 'var(--accent-ink)', borderColor: 'color-mix(in oklch, var(--accent) 40%, var(--rule-hair))' };
+  }
+  return base;
+}
+
+function fullButton(status: Status): React.CSSProperties {
+  // Use longhand border properties so per-status `borderColor` overrides
+  // don't mix with the `border` shorthand (React warns when shorthand and
+  // longhand of the same property change between renders).
+  const base: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    height: 38,
+    padding: '0 14px',
+    fontSize: 13.5,
+    fontWeight: 500,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--rule-strong)',
+    borderRadius: 2,
+    cursor: 'pointer',
+    background: 'var(--paper-elev)',
+    color: 'var(--ink)',
+    transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+    fontFamily: 'inherit',
+  };
+  if (status === 'error') return { ...base, borderColor: 'oklch(0.58 0.18 27 / 0.5)', color: 'oklch(0.5 0.18 27)' };
+  if (status === 'dirty' || status === 'saving') return { ...base, background: 'var(--accent)', borderColor: 'var(--accent)', color: 'var(--paper)' };
+  return base;
+}
+
+function StatusGlyph({ status }: { status: Status }) {
+  if (status === 'saving') {
+    return (
+      <span
+        aria-hidden
+        style={{
+          width: 10,
+          height: 10,
+          border: '1.25px solid color-mix(in oklch, currentColor 40%, transparent)',
+          borderTopColor: 'currentColor',
+          borderRadius: '50%',
+          animation: 'lp-spin 640ms linear infinite',
+        }}
       />
-    </>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.25" />
+        <line x1="6" y1="3.5" x2="6" y2="7" stroke="currentColor" strokeWidth="1.25" />
+        <rect x="5.4" y="8" width="1.2" height="1.2" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (status === 'dirty') {
+    return <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: 'currentColor' }} />;
+  }
+  if (status === 'needs-auth') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <rect x="2" y="5.5" width="8" height="5" fill="none" stroke="currentColor" strokeWidth="1" />
+        <path d="M3.5 5.5V4a2.5 2.5 0 015 0v1.5" fill="none" stroke="currentColor" strokeWidth="1" />
+      </svg>
+    );
+  }
+  // idle / saved
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <path d="M2 6.5L4.5 9L10 3" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="square" />
+    </svg>
   );
 }

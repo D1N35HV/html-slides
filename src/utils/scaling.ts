@@ -85,38 +85,49 @@ export function screenToSlideCoordinates(
 }
 
 /**
- * Hook to get the current reveal.js scale factor
- * Updates automatically when the window resizes
+ * Hook to get the current reveal.js scale factor.
+ *
+ * Reveal applies its transform: scale() to `.slides` asynchronously after
+ * layout, and often without firing a window resize (e.g. on slide change
+ * or content change). Listening only to `window.resize` leaves `scale`
+ * stale at its initial `1`, which causes react-draggable to under-translate
+ * the element so it visibly trails the cursor. Observe `.slides` directly:
+ *   - ResizeObserver: catches size changes from any cause.
+ *   - MutationObserver on style: catches the inline transform update.
  */
 export function useRevealScale(): number {
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(() => {
+    if (typeof window === 'undefined') return 1;
+    const container = getRevealContainer();
+    return container ? getRevealScale(container) : 1;
+  });
 
   useEffect(() => {
     const updateScale = () => {
       const container = getRevealContainer();
-      if (container) {
-        const newScale = getRevealScale(container);
-        setScale(newScale);
-      }
+      if (!container) return;
+      const newScale = getRevealScale(container);
+      setScale((prev) => (prev === newScale ? prev : newScale));
     };
 
-    // Update scale on mount
     updateScale();
-
-    // Update scale on window resize
     window.addEventListener('resize', updateScale);
-    
-    // Also listen for reveal.js resize events if available
+
     const container = getRevealContainer();
-    if (container) {
-      container.addEventListener('resize', updateScale);
+    const slides = container?.querySelector('.slides');
+    let ro: ResizeObserver | null = null;
+    let mo: MutationObserver | null = null;
+    if (slides instanceof HTMLElement) {
+      ro = new ResizeObserver(updateScale);
+      ro.observe(slides);
+      mo = new MutationObserver(updateScale);
+      mo.observe(slides, { attributes: true, attributeFilter: ['style'] });
     }
 
     return () => {
       window.removeEventListener('resize', updateScale);
-      if (container) {
-        container.removeEventListener('resize', updateScale);
-      }
+      ro?.disconnect();
+      mo?.disconnect();
     };
   }, []);
 

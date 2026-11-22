@@ -5,11 +5,15 @@ import { CKEditorElement } from './CKEditorElement';
 import { ImageElement } from './ImageElement';
 import { VideoElement } from './VideoElement';
 import { ShapeElement } from './ShapeElement';
+import { ChartElement } from './ChartElement';
 import { AlignmentGuides, MemoizedAlignmentGuides } from './AlignmentGuides';
 import { ImageToolbar } from './ImageToolbar';
 import { ShapeToolbar } from './ShapeToolbar';
+import { ChartToolbar } from './ChartToolbar';
 import { SlideToolbar } from './SlideToolbar';
 import { useStore } from '../store/index';
+import { useShallow } from 'zustand/react/shallow';
+import { useAlignmentGuidesStore } from '../store/alignmentGuidesStore';
 import { useRevealScale } from '../utils/scaling';
 import { resolveMediaUrl } from '../lib/utils';
 import type { SlideElement } from '../store/sliceTypes';
@@ -39,6 +43,12 @@ function renderElement(element: SlideElement, mode: 'edit' | 'present') {
           flipX={element.flipX}
           flipY={element.flipY}
           objectFit={element.objectFit}
+          cropX={element.cropX}
+          cropY={element.cropY}
+          cropWidth={element.cropWidth}
+          cropHeight={element.cropHeight}
+          originalWidth={element.originalWidth}
+          originalHeight={element.originalHeight}
         />
       );
     case 'video':
@@ -58,8 +68,30 @@ function renderElement(element: SlideElement, mode: 'edit' | 'present') {
           fillColor={element.fillColor}
           borderColor={element.borderColor}
           borderWidth={element.borderWidth}
+          borderStyle={element.borderStyle}
           cornerRadius={element.cornerRadius}
           opacity={element.opacity}
+          gradient={(element as any).gradient}
+        />
+      );
+    case 'chart':
+      return (
+        <ChartElement
+          key={element.id}
+          elementId={element.id}
+          chartType={element.chartType}
+          data={element.data}
+          primarySeriesId={element.primarySeriesId}
+          stacked={element.stacked}
+          donut={element.donut}
+          showLegend={element.showLegend}
+          legendPosition={element.legendPosition}
+          showAxis={element.showAxis}
+          showGrid={element.showGrid}
+          showLabels={element.showLabels}
+          title={element.title}
+          textColor={element.textColor}
+          mode={mode}
         />
       );
     default:
@@ -72,32 +104,36 @@ interface SlidePreviewProps {
 }
 
 export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
-  const { slides, currentSlide, setSelectedElement, setSelectedElements, clearSelection, selectedElementIds, selectedElementId, alignmentGuides } = useStore();
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const selectedElementId = useStore((s) => s.selectedElementId);
+  const selectedElementIds = useStore(useShallow((s) => s.selectedElementIds));
+  const setSelectedElement = useStore((s) => s.setSelectedElement);
+  const setSelectedElements = useStore((s) => s.setSelectedElements);
+  const clearSelection = useStore((s) => s.clearSelection);
+  const alignmentGuidesActive = useAlignmentGuidesStore((s) => s.isActive);
   const selectionRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragSelectingRef = useRef(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [selectionBox, setSelectionBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [renderKey, setRenderKey] = useState(0);
   const [showSlideToolbar, setShowSlideToolbar] = useState(false);
 
   // Get the current reveal scale for accurate selection box positioning
   const scale = useRevealScale();
 
-  // Get selected element type for toolbar display
-  const selectedElement = selectedElementId
-    ? slides[currentSlide]?.elements.find(el => el.id === selectedElementId)
+  // "Primary" element — the one whose toolbar we show. With a single selection
+  // this is just selectedElementId; when multi-selected via marquee,
+  // selectedElementId is null, so fall back to the first id in the group.
+  const primaryElementId = selectedElementId ?? (selectedElementIds.length > 0 ? selectedElementIds[0] : null);
+  const selectedElement = primaryElementId
+    ? slides[currentSlide]?.elements.find(el => el.id === primaryElementId)
     : null;
 
   // Helper to get latest element state by id
   const getElementById = (slide, id) => {
     return slide.elements.find(el => el.id === id);
   };
-
-  // Force re-render when elements change to ensure proper event binding
-  useEffect(() => {
-    setRenderKey(prev => prev + 1);
-  }, [slides.length, slides.map(s => s.elements?.length).join(',')]);
 
   // Additional effect to ensure reveal.js sync when component updates
   useEffect(() => {
@@ -106,7 +142,7 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
       console.log('SlidePreview updated - slides count:', slides.length);
     }, 50);
     return () => clearTimeout(timer);
-  }, [slides.length, renderKey]);
+  }, [slides.length]);
 
   const handleSlideClick = (e: React.MouseEvent) => {
     // Only deselect if clicking on the slide background and show slide toolbar
@@ -116,12 +152,12 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
     }
   };
 
-  // Hide slide toolbar when an element is selected
+  // Hide slide toolbar when any element is selected (single or multi).
   useEffect(() => {
-    if (selectedElementId) {
+    if (selectedElementId || selectedElementIds.length > 0) {
       setShowSlideToolbar(false);
     }
-  }, [selectedElementId]);
+  }, [selectedElementId, selectedElementIds.length]);
 
   const getCurrentSlideElements = () => {
     const slide = slides[currentSlide];
@@ -133,7 +169,7 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
     return elements.filter(el => {
       const { x, y } = el.position;
       const { width, height } = el.size;
-      return x >= box.x && y >= box.y && (x + width) <= (box.x + box.w) && (y + height) <= (box.y + box.h);
+      return x < box.x + box.w && x + width > box.x && y < box.y + box.h && y + height > box.y;
     }).map(el => el.id);
   };
 
@@ -208,7 +244,11 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
         <ShapeToolbar elementId={selectedElement.id} />,
         document.body
       )}
-      {mode === 'edit' && showSlideToolbar && !selectedElementId && createPortal(
+      {mode === 'edit' && selectedElement && selectedElement.type === 'chart' && createPortal(
+        <ChartToolbar elementId={selectedElement.id} />,
+        document.body
+      )}
+      {mode === 'edit' && showSlideToolbar && !selectedElementId && selectedElementIds.length === 0 && createPortal(
         <SlideToolbar slideIndex={currentSlide} />,
         document.body
       )}
@@ -228,28 +268,28 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
 
           return (
             <section
-              key={`${slide.id}-${renderKey}`}
+              key={slide.id}
               className="data-markdown h-full w-full relative flex items-center justify-center"
               data-transition={slide.transition || 'slide'}
               data-transition-speed={slide.transitionSpeed || 'default'}
               style={{
                 overflow: 'visible',
-                backgroundColor: slide.backgroundColor || '#ffffff',
+                background: slide.backgroundColor || '#ffffff',
                 backgroundImage: slide.backgroundImage ? `url(${resolveMediaUrl(slide.backgroundImage)})` : undefined,
                 backgroundSize: 'cover',
                 backgroundPosition: 'center'
               }}
             >
-              {/* Only render content for the current slide */}
-              {isCurrentSlide && (
+              {/* Only render content for the current slide in edit mode, or all elements in present mode */}
+              {(isCurrentSlide || mode === 'present') && (
                 <div className="relative h-full w-full" onClick={handleSlideClick} style={{ overflow: 'visible' }}>
                   <div
                     className="relative h-full w-full"
-                    ref={containerRef}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseUp}
+                    ref={mode === 'edit' ? containerRef : undefined}
+                    onMouseDown={mode === 'edit' ? handleMouseDown : undefined}
+                    onMouseMove={mode === 'edit' ? handleMouseMove : undefined}
+                    onMouseUp={mode === 'edit' ? handleMouseUp : undefined}
+                    onMouseLeave={mode === 'edit' ? handleMouseUp : undefined}
                   >
                     {slide?.elements?.map((element) => {
                       // Get the latest element state from the store
@@ -272,10 +312,10 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
                       );
                     })}
                     {(!slide?.elements || slide.elements.length === 0) && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="text-center text-gray-400">
-                          <p className="text-lg mb-2">Empty Slide {slideIndex + 1}</p>
-                          <p className="text-sm">Use the right sidebar to add text, images, videos or other elements</p>
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="text-center font-mono opacity-10 select-none">
+                          <p className="text-8xl font-black uppercase tracking-widest leading-none">NO DATA</p>
+                          <p className="text-2xl tracking-widest mt-4">SLIDE_{String(slideIndex + 1).padStart(3, '0')}</p>
                         </div>
                       </div>
                     )}
@@ -290,12 +330,9 @@ export function SlidePreview({ mode = 'edit' }: SlidePreviewProps) {
                         }}
                       />
                     )}
-                    {mode === 'edit' && alignmentGuides.isActive && (
+                    {mode === 'edit' && alignmentGuidesActive && (
                       <MemoizedAlignmentGuides
-                        activeElementId={alignmentGuides.activeElementId || undefined}
-                        activePosition={alignmentGuides.activePosition || undefined}
-                        activeSize={alignmentGuides.activeSize || undefined}
-                        containerSize={{ width: 1024, height: 768 }}
+                        containerSize={{ width: 1920, height: 1080 }}
                       />
                     )}
                   </div>

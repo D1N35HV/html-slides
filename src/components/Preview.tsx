@@ -14,7 +14,10 @@ export function Preview() {
   const deckRef = useRef<Reveal.Api>();
   // Track when the Reveal deck has finished its async initialization
   const [deckInitialized, setDeckInitialized] = useState(false);
-  const { slides, currentSlide, setCurrentSlide, selectedElementId } = useStore();
+  const slides = useStore((s) => s.slides);
+  const currentSlide = useStore((s) => s.currentSlide);
+  const setCurrentSlide = useStore((s) => s.setCurrentSlide);
+  const selectedElementId = useStore((s) => s.selectedElementId);
   const { isEditorMinimized } = useLayoutStore();
 
   // Listen for Reveal.js slide change events and update store
@@ -67,38 +70,33 @@ export function Preview() {
     };
   }, [isEditorMinimized]);
 
-  // Sync reveal.js when slides change (after initial load or user edits)
+  // Sync reveal.js when current slide changes or structural changes occur
   useEffect(() => {
     if (!containerRef.current || !deckRef.current) return;
 
-    //updateSlides(containerRef.current, slides);
-    // Add a small delay to ensure DOM is updated when new slides are added
+    // We only need to sync and layout if the slide structure or current slide changed
+    // For individual element updates inside a slide, React handles it without needing Reveal.js sync
+    if (deckRef.current && containerRef.current) {
+      deckRef.current.slide(currentSlide, 0);
+    }
+  }, [currentSlide]);
+
+  // Handle structural changes (slide count or transitions)
+  useEffect(() => {
+    if (!containerRef.current || !deckRef.current) return;
+
     const timer = setTimeout(() => {
       if (deckRef.current && containerRef.current) {
         deckRef.current.sync();
         deckRef.current.layout();
-        // Navigate to the current slide
         deckRef.current.slide(currentSlide, 0);
       }
     }, 100);
 
     return () => clearTimeout(timer);
-  }, [slides, currentSlide, slidesTransitionKey]);
+  }, [slides.length, slidesTransitionKey]);
 
-  // Additional sync specifically for when slide count changes (new slide added)
-  useEffect(() => {
-    if (!containerRef.current || !deckRef.current) return;
 
-    const timer = setTimeout(() => {
-      if (deckRef.current && containerRef.current) {
-        console.log('Syncing reveal.js after slide count change:', slides.length);
-        deckRef.current.sync();
-        deckRef.current.layout();
-      }
-    }, 150);
-
-    return () => clearTimeout(timer);
-  }, [slides.length]);
 
   // Handle race: if slides from DB arrive BEFORE deck finishes initializing, ensure a sync runs once deck is ready
   useEffect(() => {
@@ -123,17 +121,7 @@ export function Preview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deckInitialized]);
 
-  // If slides arrive (length changes) AFTER deck is initialized but initial slides effect missed (e.g. deck wasn't ready during first slides update), force a sync
-  useEffect(() => {
-    if (!deckInitialized) return;
-    if (!deckRef.current) return;
-    if (!containerRef.current) return;
-    const t = setTimeout(() => {
-      deckRef.current?.sync();
-      deckRef.current?.layout();
-    }, 50);
-    return () => clearTimeout(t);
-  }, [slides.length, deckInitialized]);
+
 
   return (
     <div className={`flex-1 relative transition-all duration-300 bg-white pt-14 overflow-hidden`}>

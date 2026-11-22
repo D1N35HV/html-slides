@@ -15,7 +15,7 @@ export interface SlideElement {
   // Optional properties for different element types
   imageUrl?: string;
   videoUrl?: string;
-  shapeType?: 'rectangle' | 'circle' | 'triangle' | 'arrow' | 'diamond' | 'pentagon' | 'hexagon' | 'star' | 'heart' | 'cloud' | 'callout' | 'parallelogram';
+  shapeType?: 'rectangle' | 'circle' | 'triangle' | 'arrow' | 'diamond' | 'pentagon' | 'hexagon' | 'star' | 'heart' | 'cloud' | 'callout' | 'parallelogram' | 'line' | 'line-arrow-right' | 'line-arrow-double';
   fillColor?: string;
   borderColor?: string;
   borderWidth?: number;

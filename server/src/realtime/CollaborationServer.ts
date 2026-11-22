@@ -4,7 +4,6 @@ import jwt from 'jsonwebtoken';
 import Presentation from '../models/Presentation';
 import { Types } from 'mongoose';
 import { ElementPatch, PresentationPatch, SlidePatch } from '../types/collaboration';
-import thumbnailService from '../services/ThumbnailService';
 
 interface AuthUser { id: string; name?: string; email?: string; }
 
@@ -73,6 +72,8 @@ export class CollaborationServer {
         }
 
         let changed = false;
+        let affectedSlide: any = null;
+
         if ('elementId' in patch) {
           const elementPatch = patch as ElementPatch;
           const slide = room.slides.find(s => s.id === elementPatch.slideId);
@@ -81,6 +82,7 @@ export class CollaborationServer {
             if (element) {
               Object.assign(element, elementPatch.changes);
               changed = true;
+              affectedSlide = slide;
             }
           }
         } else {
@@ -89,31 +91,22 @@ export class CollaborationServer {
           if (slide) {
             Object.assign(slide, slidePatch.changes);
             changed = true;
+            affectedSlide = slide;
           }
         }
 
         if (changed) {
           room.version += 1;
+
+          // Flag the thumbnail as expired (don't clear it so previews still work)
+          if (affectedSlide) {
+            affectedSlide.thumbnailExpired = true;
+          }
+
           // Persist minimal changes (optimistic: update full document portion)
           this.persistRoomDebounced(presentationId);
           this.io.to(presentationId).except(socket.id).emit('remote_patch', { ...patch, serverVersion: room.version });
           ack({ ok: true, serverVersion: room.version });
-
-          // Trigger thumbnail regeneration for the changed slide
-          const slideId = 'slideId' in patch ? patch.slideId : null;
-          if (slideId) {
-            const slide = room.slides.find(s => s.id === slideId);
-            if (slide) {
-              thumbnailService.queueThumbnailGeneration(
-                slideId,
-                slide,
-                (thumbnailUrl) => {
-                  this.emitThumbnailUpdate(presentationId, slideId, thumbnailUrl);
-                },
-                presentationId
-              );
-            }
-          }
         } else {
           ack({ ok: false, serverVersion: room.version });
         }
@@ -186,7 +179,23 @@ export class CollaborationServer {
     const room = this.rooms.get(presentationId);
     if (!room) return;
     try {
-      await Presentation.updateOne({ _id: presentationId }, { $set: { slides: room.slides, version: room.version, lastModified: new Date() } });
+      // Sanitize crop values before persisting to prevent validation errors
+      const sanitizedSlides = room.slides.map(slide => ({
+        ...slide,
+        elements: (slide.elements || []).map((element: any) => {
+          if (element.type !== 'image') return element;
+          const sanitized = { ...element };
+          // Clamp crop values to valid 0-100 range, or remove if undefined/null
+          const cropFields = ['cropX', 'cropY', 'cropWidth', 'cropHeight'] as const;
+          for (const field of cropFields) {
+            if (sanitized[field] !== undefined && sanitized[field] !== null) {
+              sanitized[field] = Math.max(0, Math.min(100, sanitized[field]));
+            }
+          }
+          return sanitized;
+        })
+      }));
+      await Presentation.updateOne({ _id: presentationId }, { $set: { slides: sanitizedSlides, version: room.version, lastModified: new Date() } });
     } catch (e) {
       console.error('Failed to persist presentation', presentationId, e);
     }

@@ -84,6 +84,9 @@ class CollaborationService {
     targetUserId?: string;
   }) => void) {
     this.listeners.ppt_progress.push(cb);
+    return () => {
+      this.listeners.ppt_progress = this.listeners.ppt_progress.filter(l => l !== cb);
+    };
   }
 
   sendElementPatch(slideId: string, elementId: string, changes: Record<string, any>, cb?: Callback, _retry = false) {

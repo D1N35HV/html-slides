@@ -1,6 +1,56 @@
-dist
-node_modules
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/
 
-# Upload folders
-server/uploads/
+# Build output
+dist/
+build/
+server/dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# Environment (commit only *.example)
+.env
+.env.*
+!.env.example
+server/.env
+server/.env.*
+!server/.env.example
+
+# Uploads & generated files
 uploads/
+server/uploads/
+server/thumbnails/
+server/temp/
+tmp/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Local agent tooling
+.agent/
+.claude/*.lock

@@ -6,7 +6,7 @@ import { EventEmitter } from 'events';
 // Slide element types matching frontend
 interface SlideElement {
     id: string;
-    type: 'text' | 'heading' | 'image' | 'video' | 'shape';
+    type: 'text' | 'heading' | 'image' | 'video' | 'shape' | 'chart';
     content?: string;
     position: { x: number; y: number };
     size: { width: number; height: number };
@@ -21,20 +21,28 @@ interface SlideElement {
     cornerRadius?: number;
     opacity?: number;
     backgroundColor?: string;
+    // Chart fields. The server-side ThumbnailService can't run recharts —
+    // it renders a placeholder so the slide thumbnail remains coherent.
+    // Production thumbnails come from the client-side rasterize-at-save
+    // path (Q14), which captures the real recharts SVG.
+    chartType?: 'bar' | 'line' | 'pie' | 'area';
+    title?: string;
 }
 
 interface SlideData {
     id: string;
     elements: SlideElement[];
-    backgroundColor?: string;
-    backgroundImage?: string;
+    backgroundColor?: string | undefined;
+    backgroundImage?: string | undefined;
 }
 
 interface ThumbnailJob {
     slideId: string;
-    slideData: SlideData;
+    slideIndex: number;
+    presentationId: string;
     callback: (thumbnailUrl: string) => void;
-    presentationId?: string | undefined;
+    // Keep slideData for fallback rendering
+    slideData?: SlideData | undefined;
 }
 
 interface ThumbnailOptions {
@@ -43,33 +51,34 @@ interface ThumbnailOptions {
     quality?: number;
 }
 
-const SLIDE_WIDTH = 1024;
-const SLIDE_HEIGHT = 768;
-const THUMBNAIL_WIDTH = 320;
-const THUMBNAIL_HEIGHT = 240;
-const DEBOUNCE_MS = 300;
+const SLIDE_WIDTH = 1920;
+const SLIDE_HEIGHT = 1080;
+const DEBOUNCE_MS = 500; // Increased debounce for route-based rendering
 
 class ThumbnailService extends EventEmitter {
     private browser: Browser | null = null;
     private page: Page | null = null;
     private isInitializing = false;
-    private thumbnailsDir: string;
+    private uploadsDir: string;
     private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
     private pendingJobs: Map<string, ThumbnailJob> = new Map();
     private serverBaseUrl: string;
+    private frontendBaseUrl: string;
 
     constructor() {
         super();
-        this.thumbnailsDir = path.join(__dirname, '../../uploads/thumbnails');
+        this.uploadsDir = path.join(__dirname, '../../uploads');
         this.serverBaseUrl = process.env['SERVER_URL'] || 'http://localhost:3001';
+        this.frontendBaseUrl = process.env['FRONTEND_URL'] || 'http://localhost:5173';
 
-        // Ensure thumbnails directory exists
-        if (!fs.existsSync(this.thumbnailsDir)) {
-            fs.mkdirSync(this.thumbnailsDir, { recursive: true });
+        // Ensure uploads directory exists
+        if (!fs.existsSync(this.uploadsDir)) {
+            fs.mkdirSync(this.uploadsDir, { recursive: true });
         }
 
         console.log('[ThumbnailService] Initialized');
-        console.log('  Thumbnails dir:', this.thumbnailsDir);
+        console.log('  Uploads dir:', this.uploadsDir);
+        console.log('  Frontend URL:', this.frontendBaseUrl);
     }
 
     /**
@@ -128,12 +137,14 @@ class ThumbnailService extends EventEmitter {
 
     /**
      * Queue a thumbnail generation job with debouncing
+     * Uses the frontend present route for rendering
      */
     queueThumbnailGeneration(
+        presentationId: string,
         slideId: string,
-        slideData: SlideData,
+        slideIndex: number,
         callback: (thumbnailUrl: string) => void,
-        presentationId?: string
+        slideData?: SlideData
     ): void {
         // Clear existing debounce timer
         const existingTimer = this.debounceTimers.get(slideId);
@@ -142,7 +153,7 @@ class ThumbnailService extends EventEmitter {
         }
 
         // Store the job
-        this.pendingJobs.set(slideId, { slideId, slideData, callback, presentationId });
+        this.pendingJobs.set(slideId, { slideId, slideIndex, presentationId, callback, slideData });
 
         // Set new debounce timer
         const timer = setTimeout(async () => {
@@ -159,25 +170,106 @@ class ThumbnailService extends EventEmitter {
 
     /**
      * Process a single thumbnail job
+     * Uses HTML-based rendering as it's faster and doesn't require frontend auth
      */
     private async processJob(job: ThumbnailJob): Promise<void> {
         try {
-            const thumbnailUrl = await this.renderSlideThumbnail(
-                job.slideId,
-                job.slideData,
-                { width: THUMBNAIL_WIDTH, height: THUMBNAIL_HEIGHT }
-            );
-            job.callback(thumbnailUrl);
+            // Use HTML-based rendering (faster and doesn't require frontend to be running)
+            if (job.slideData) {
+                const thumbnailUrl = await this.renderSlideThumbnail(
+                    job.presentationId,
+                    job.slideIndex,
+                    job.slideData
+                );
+                job.callback(thumbnailUrl);
+            } else {
+                console.warn(`[ThumbnailService] No slide data available for ${job.slideId}, skipping thumbnail generation`);
+            }
         } catch (error) {
             console.error(`[ThumbnailService] Failed to generate thumbnail for slide ${job.slideId}:`, error);
         }
     }
 
     /**
-     * Render a slide to a PNG thumbnail
+     * Render a slide thumbnail by navigating to the frontend thumbnail route
+     * (Reserved for future use - currently using HTML-based rendering)
+     */
+    async renderSlideThumbnailViaRoute(
+        presentationId: string,
+        _slideId: string,
+        slideIndex: number
+    ): Promise<string> {
+        // Ensure browser is initialized
+        if (!this.browser || !this.page) {
+            await this.initialize();
+        }
+
+        if (!this.page) {
+            throw new Error('Failed to initialize browser page');
+        }
+
+        // Create presentation-specific thumbnail directory
+        const thumbnailDir = path.join(this.uploadsDir, 'presentations', presentationId, 'thumbnails');
+        if (!fs.existsSync(thumbnailDir)) {
+            fs.mkdirSync(thumbnailDir, { recursive: true });
+        }
+
+        const thumbnailUrl = `${this.frontendBaseUrl}/thumbnail/${presentationId}/${slideIndex}`;
+        console.log(`[ThumbnailService] Navigating to: ${thumbnailUrl}`);
+
+        try {
+            // Navigate to the thumbnail route
+            await this.page.goto(thumbnailUrl, {
+                waitUntil: 'networkidle2',
+                timeout: 30000
+            });
+
+            // Wait for the thumbnail to be ready
+            await this.page.waitForFunction(
+                `document.querySelector('[data-thumbnail-ready="true"]') !== null`,
+                { timeout: 10000 }
+            ).catch(() => {
+                console.log('[ThumbnailService] Timeout waiting for thumbnail ready, proceeding anyway');
+            });
+
+            // Give a little extra time for final rendering
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Find the thumbnail container
+            const slideElement = await this.page.$('#thumbnail-container');
+            if (!slideElement) {
+                throw new Error('Could not find thumbnail container');
+            }
+
+            // Generate filename with sequential numbering
+            const slideNumber = String(slideIndex + 1).padStart(4, '0');
+            const filename = `${slideNumber}.png`;
+            const filepath = path.join(thumbnailDir, filename);
+
+            // Take screenshot
+            await slideElement.screenshot({
+                path: filepath as `${string}.png`,
+                type: 'png',
+                omitBackground: false
+            });
+
+            const resultUrl = `/uploads/presentations/${presentationId}/thumbnails/${filename}`;
+            console.log(`[ThumbnailService] Generated thumbnail via route: ${resultUrl}`);
+
+            return resultUrl;
+        } catch (error) {
+            console.error('[ThumbnailService] Error rendering thumbnail via route:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Render a slide to a PNG thumbnail using self-generated HTML
+     * Stores thumbnails in presentation-specific folders with sequential naming
      */
     async renderSlideThumbnail(
-        slideId: string,
+        presentationId: string,
+        slideIndex: number,
         slideData: SlideData,
         _options: ThumbnailOptions = {}
     ): Promise<string> {
@@ -190,6 +282,12 @@ class ThumbnailService extends EventEmitter {
             throw new Error('Failed to initialize browser page');
         }
 
+        // Create presentation-specific thumbnail directory
+        const thumbnailDir = path.join(this.uploadsDir, 'presentations', presentationId, 'thumbnails');
+        if (!fs.existsSync(thumbnailDir)) {
+            fs.mkdirSync(thumbnailDir, { recursive: true });
+        }
+
         try {
             // Generate HTML for the slide
             const html = this.generateSlideHTML(slideData);
@@ -198,7 +296,6 @@ class ThumbnailService extends EventEmitter {
             await this.page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
             // Wait a bit for any images to load
-            // Use waitForFunction with string to avoid TypeScript issues with document in Node context
             await this.page.waitForFunction(
                 `(function() {
                     const images = document.querySelectorAll('img');
@@ -216,10 +313,10 @@ class ThumbnailService extends EventEmitter {
                 throw new Error('Could not find slide container');
             }
 
-            // Generate filename with timestamp
-            const timestamp = Date.now();
-            const filename = `${slideId}-${timestamp}.png`;
-            const filepath = path.join(this.thumbnailsDir, filename);
+            // Generate filename with sequential numbering (0001.png, 0002.png, etc.)
+            const slideNumber = String(slideIndex + 1).padStart(4, '0');
+            const filename = `${slideNumber}.png`;
+            const filepath = path.join(thumbnailDir, filename);
 
             // Take screenshot
             await slideElement.screenshot({
@@ -228,10 +325,7 @@ class ThumbnailService extends EventEmitter {
                 omitBackground: false
             });
 
-            // Clean up old thumbnails for this slide
-            await this.cleanupOldThumbnails(slideId, filename);
-
-            const thumbnailUrl = `/thumbnails/${filename}`;
+            const thumbnailUrl = `/uploads/presentations/${presentationId}/thumbnails/${filename}`;
             console.log(`[ThumbnailService] Generated thumbnail: ${thumbnailUrl}`);
 
             return thumbnailUrl;
@@ -242,7 +336,7 @@ class ThumbnailService extends EventEmitter {
     }
 
     /**
-     * Generate HTML template for a slide
+     * Generate HTML template for a slide (fallback method)
      */
     private generateSlideHTML(slideData: SlideData): string {
         const backgroundColor = slideData.backgroundColor || '#ffffff';
@@ -326,6 +420,19 @@ class ThumbnailService extends EventEmitter {
                 return this.renderShapeToHTML(element, baseStyle);
             }
 
+            case 'chart': {
+                // Placeholder thumbnail — recharts isn't available
+                // server-side, so we draw a quiet rectangle with the chart
+                // title (or chart type as fallback) centered. Production
+                // thumbnails via the client save-time rasterizer carry the
+                // real chart visual.
+                const label = element.title || (element.chartType
+                    ? `${element.chartType[0]?.toUpperCase()}${element.chartType.slice(1)} chart`
+                    : 'Chart');
+                const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `<div class="element chart-element" style="${baseStyle}background:#f4f3ee;border:1px solid #d8d4c5;display:flex;align-items:center;justify-content:center;color:#5a5648;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;letter-spacing:0.02em;">${safeLabel}</div>`;
+            }
+
             default:
                 return '';
         }
@@ -369,12 +476,41 @@ class ThumbnailService extends EventEmitter {
     }
 
     /**
-     * Resolve image URLs to absolute URLs
+     * Resolve image URLs to absolute URLs that Puppeteer can load
+     * For local files, convert to base64 data URIs for reliable loading
      */
     private resolveImageUrl(url: string): string {
         if (!url) return '';
         if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) {
             return url;
+        }
+        // Convert /uploads/... paths to base64 data URIs
+        if (url.startsWith('/uploads/')) {
+            try {
+                const filePath = path.join(this.uploadsDir, url.replace('/uploads/', ''));
+                if (fs.existsSync(filePath)) {
+                    const imageBuffer = fs.readFileSync(filePath);
+                    const base64 = imageBuffer.toString('base64');
+                    // Determine MIME type from extension
+                    const ext = path.extname(filePath).toLowerCase();
+                    const mimeTypes: Record<string, string> = {
+                        '.png': 'image/png',
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.gif': 'image/gif',
+                        '.webp': 'image/webp',
+                        '.svg': 'image/svg+xml',
+                        '.bmp': 'image/bmp'
+                    };
+                    const mimeType = mimeTypes[ext] || 'image/png';
+                    return `data:${mimeType};base64,${base64}`;
+                }
+                console.warn(`[ThumbnailService] Image file not found: ${filePath}`);
+            } catch (error) {
+                console.error(`[ThumbnailService] Error reading image file: ${error}`);
+            }
+            // Fallback to server URL if file reading fails
+            return `${this.serverBaseUrl}${url}`;
         }
         if (url.startsWith('/')) {
             return `${this.serverBaseUrl}${url}`;
@@ -383,49 +519,27 @@ class ThumbnailService extends EventEmitter {
     }
 
     /**
-     * Clean up old thumbnails for a slide
+     * Clean up stale presentation thumbnail directories
+     * Removes thumbnail folders for presentations that no longer exist
      */
-    private async cleanupOldThumbnails(slideId: string, keepFilename: string): Promise<void> {
-        try {
-            const files = fs.readdirSync(this.thumbnailsDir);
-            const slideFiles = files.filter(f => f.startsWith(slideId) && f !== keepFilename);
-            for (const file of slideFiles) {
-                try {
-                    fs.unlinkSync(path.join(this.thumbnailsDir, file));
-                } catch (e) { /* ignore */ }
-            }
-        } catch (error) { /* ignore */ }
-    }
-
-    /**
-     * Clean up all stale thumbnails
-     */
-    async cleanupStaleThumbnails(maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<void> {
-        try {
-            const now = Date.now();
-            const files = fs.readdirSync(this.thumbnailsDir);
-            for (const file of files) {
-                const filepath = path.join(this.thumbnailsDir, file);
-                const stats = fs.statSync(filepath);
-                if (now - stats.mtimeMs > maxAgeMs) {
-                    fs.unlinkSync(filepath);
-                    console.log(`[ThumbnailService] Cleaned up stale thumbnail: ${file}`);
-                }
-            }
-        } catch (error) {
-            console.error('[ThumbnailService] Error cleaning up stale thumbnails:', error);
-        }
+    async cleanupStaleThumbnails(_maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<void> {
+        // This method is now a no-op since thumbnails are stored per-presentation
+        // and will be cleaned up when the presentation is deleted
+        console.log('[ThumbnailService] Thumbnail cleanup is handled per-presentation');
     }
 
     /**
      * Get the thumbnail URL for a slide if it exists
      */
-    getThumbnailUrl(slideId: string): string | null {
+    getThumbnailUrl(presentationId: string, slideIndex: number): string | null {
         try {
-            const files = fs.readdirSync(this.thumbnailsDir);
-            const slideFile = files.filter(f => f.startsWith(slideId)).sort().pop();
-            if (slideFile) {
-                return `/thumbnails/${slideFile}`;
+            const slideNumber = String(slideIndex + 1).padStart(4, '0');
+            const filename = `${slideNumber}.png`;
+            const thumbnailDir = path.join(this.uploadsDir, 'presentations', presentationId, 'thumbnails');
+            const filepath = path.join(thumbnailDir, filename);
+
+            if (fs.existsSync(filepath)) {
+                return `/uploads/presentations/${presentationId}/thumbnails/${filename}`;
             }
         } catch (error) { /* ignore */ }
         return null;

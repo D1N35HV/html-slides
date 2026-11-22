@@ -32,6 +32,46 @@ interface PresentationData {
   tags?: string[];
 }
 
+// Heal element shape before sending to the server.
+//
+// 1) Heading elements without `level` — Joi requires 1–6. Imported PPTX
+//    templates historically reached the client without `level` set because
+//    PPTConverterService's AppElement schema didn't expose the field. Now
+//    fixed at the source; this heal handles existing decks already in the
+//    store.
+//
+// 2) Orphan chart elements with type==='chart' but no chartType/data —
+//    these render as empty (the ChartElement component returns <div /> when
+//    chartType is undefined), so the user has invisible phantoms in their
+//    deck. They can't be saved (Joi requires chartType+data) and aren't
+//    user-meaningful, so we drop them. A console.warn helps debug if this
+//    fires unexpectedly.
+function sanitizeForSave(presentation: PresentationData): PresentationData {
+  return {
+    ...presentation,
+    slides: presentation.slides.map(slide => {
+      const cleanedElements: any[] = [];
+      for (const el of (slide.elements || [])) {
+        if (el?.type === 'chart') {
+          if (!el.chartType || !el.data) {
+            console.warn(
+              `[sanitizeForSave] Dropping orphan chart element ${el.id} on slide ${slide.id} ` +
+              `(missing ${!el.chartType ? 'chartType' : ''}${!el.chartType && !el.data ? '+' : ''}${!el.data ? 'data' : ''})`
+            );
+            continue;
+          }
+        }
+        if (el?.type === 'heading' && (el.level === undefined || el.level === null)) {
+          cleanedElements.push({ ...el, level: 1 });
+          continue;
+        }
+        cleanedElements.push(el);
+      }
+      return { ...slide, elements: cleanedElements };
+    }),
+  };
+}
+
 interface PresentationQueryParams {
   page?: number;
   limit?: number;
@@ -148,6 +188,35 @@ class ApiService {
     return this.handleResponse(response);
   }
 
+  async updateProfile(patch: {
+    name?: string;
+    avatar?: string;
+    preferences?: Partial<{
+      theme: 'light' | 'dark' | 'system';
+      defaultTemplate: string;
+      autoSave: boolean;
+      notifications: boolean;
+    }>;
+  }): Promise<ApiResponse> {
+    const response = await fetch(`${this.baseURL}/auth/me`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(patch),
+    });
+
+    return this.handleResponse(response);
+  }
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse> {
+    const response = await fetch(`${this.baseURL}/auth/password`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+
+    return this.handleResponse(response);
+  }
+
   // Presentation methods
   async createPresentation(presentationData: PresentationData): Promise<ApiResponse> {
     const response = await fetch(`${this.baseURL}/presentations`, {
@@ -163,7 +232,7 @@ class ApiService {
     const response = await fetch(`${this.baseURL}/presentations/${id}`, {
       method: 'PUT',
       headers: this.getHeaders(),
-      body: JSON.stringify(presentationData),
+      body: JSON.stringify(sanitizeForSave(presentationData)),
     });
 
     return this.handleResponse(response);

@@ -1,10 +1,13 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import Draggable from 'react-draggable';
-import { useStore } from '../store/index.ts';
-import { ContextMenu } from './ContextMenu.tsx';
-import { SelectionBox } from './SelectionBox.tsx';
-import { useRevealScale, adjustDeltaForScale } from '../utils/scaling.ts';
-import { useAlignmentSnap } from './AlignmentGuides.tsx';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import { useStore } from '../store/index';
+import { useShallow } from 'zustand/react/shallow';
+import { useAlignmentGuidesStore } from '../store/alignmentGuidesStore';
+import { ContextMenu } from './ContextMenu';
+import { SelectionBox } from './SelectionBox';
+import { isLineShape } from './ShapeElement';
+import { useRevealScale, adjustDeltaForScale, getRevealContainer, getRevealScale } from '../utils/scaling';
+import { useAlignmentSnap } from './AlignmentGuides';
+import { useCropModeStore } from '../store/useCropModeStore';
 
 interface ResizableDraggableElementProps {
   elementId: string;
@@ -16,17 +19,40 @@ interface ResizableDraggableElementProps {
   isEditable?: boolean;
 }
 
-export function ResizableDraggableElement({ 
-  elementId, 
-  children, 
-  position, 
+export function ResizableDraggableElement({
+  elementId,
+  children,
+  position,
   size,
   rotation = 0,
   zIndex,
   isEditable = true
 }: ResizableDraggableElementProps) {
-  const { updateElementPosition, updateElementSize, updateElementRotation, setSelectedElement, selectedElementId, selectedElementIds, toggleElementSelection, setSelectedElements, updateMultipleElementPositions, editingElementId, setGlobalDragState, setAlignmentGuides, clearAlignmentGuides } = useStore();
-  
+  const updateElementPosition = useStore((s) => s.updateElementPosition);
+  const updateElementSize = useStore((s) => s.updateElementSize);
+  const updateElementRotation = useStore((s) => s.updateElementRotation);
+  const setSelectedElement = useStore((s) => s.setSelectedElement);
+  const setSelectedElements = useStore((s) => s.setSelectedElements);
+  const toggleElementSelection = useStore((s) => s.toggleElementSelection);
+  const updateMultipleElementPositions = useStore((s) => s.updateMultipleElementPositions);
+  const setGlobalDragState = useStore((s) => s.setGlobalDragState);
+  const editingElementId = useStore((s) => s.editingElementId);
+  const selectedElementId = useStore((s) => s.selectedElementId);
+  const selectedElementIds = useStore(useShallow((s) => s.selectedElementIds));
+  const setAlignmentGuides = useAlignmentGuidesStore((s) => s.setActive);
+  const clearAlignmentGuides = useAlignmentGuidesStore((s) => s.clear);
+  const { cropModeElementId } = useCropModeStore();
+
+  const isCropMode = cropModeElementId === elementId;
+  const hideHandles = isCropMode;
+
+  // Detect line shapes so SelectionBox can collapse to E/W-only resize.
+  const lineMode = useStore((s) => {
+    const el = s.slides[s.currentSlide]?.elements.find((e) => e.id === elementId);
+    if (!el || el.type !== 'shape') return false;
+    return isLineShape((el as { shapeType?: any }).shapeType);
+  });
+
   const [isResizing, setIsResizing] = useState(false);
   const [resizeDirection, setResizeDirection] = useState<string>('');
   const [isRotating, setIsRotating] = useState(false);
@@ -35,9 +61,9 @@ export function ResizableDraggableElement({
   const [hasMoved, setHasMoved] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
-  
+
   const nodeRef = useRef<HTMLDivElement>(null);
-  
+
   // Get the current scale factor for smooth scaling-aware interactions
   const scale = useRevealScale();
 
@@ -49,7 +75,7 @@ export function ResizableDraggableElement({
   const validPosition = position || { x: 50, y: 50 };
   const validRotation = rotation || 0;
 
-  
+
 
   // Ensure component is properly mounted before enabling interactions
   useEffect(() => {
@@ -59,13 +85,36 @@ export function ResizableDraggableElement({
     return () => clearTimeout(timer);
   }, []);
 
-  // Dragging via react-draggable: its scale prop already normalizes movement, so use data.x/y directly.
   const initialGroupPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
-  
-  // RAF-based position update for smooth 60fps dragging
+  // DOM nodes of OTHER group members (not the dragged element) plus their
+  // starting positions. Populated at pointerdown so we can update their
+  // transforms imperatively during drag without re-querying the DOM.
+  const groupNodesRef = useRef<Array<{ node: HTMLElement; startX: number; startY: number }>>([]);
+
+  // RAF handle (shared with the pointer-move path).
   const rafRef = useRef<number | null>(null);
-  const pendingPositionRef = useRef<{ x: number; y: number } | null>(null);
-  const lastUpdateTimeRef = useRef<number>(0);
+
+  // Drag state lives in a ref so pointermove never triggers React renders.
+  // The element's position is updated directly on the DOM node via
+  // node.style.transform; React only gets involved on pointerup, when we
+  // commit the final position to the store.
+  const dragStateRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startPosX: number;
+    startPosY: number;
+    scale: number;
+    lastDx: number;
+    lastDy: number;
+    moved: boolean;
+    rafPending: boolean;
+  } | null>(null);
+
+  // Keep validPosition readable from the layout-effect closure without
+  // re-binding pointer handlers on every render.
+  const validPositionRef = useRef(validPosition);
+  validPositionRef.current = validPosition;
 
   // Cleanup RAF on unmount
   useEffect(() => {
@@ -76,101 +125,198 @@ export function ResizableDraggableElement({
     };
   }, []);
 
-  const handleDrag = useCallback((e: any, data: { x: number; y: number, deltaX?: number; deltaY?: number }) => {
-    if (!isResizing && !isRotating && isMounted && isEditable && !editingElementId) {
-      setHasMoved(true);
-      
-      // Calculate snapped position immediately for responsive feel
-      const snappedPosition = calculateSnapPosition({ x: data.x, y: data.y }, validSize);
-      
-      // Store pending position
-      pendingPositionRef.current = snappedPosition;
-      
-      // Throttle state updates to ~60fps using RAF
-      const now = performance.now();
-      const timeSinceLastUpdate = now - lastUpdateTimeRef.current;
-      
-      // Update guides immediately for visual feedback (they're lightweight)
-      setAlignmentGuides(elementId, snappedPosition, validSize);
-      
-      // Throttle position updates to prevent excessive re-renders
-      if (timeSinceLastUpdate >= 16) { // ~60fps
-        lastUpdateTimeRef.current = now;
-        
-        // If multiple selected, move all by delta
-        const isGroup = selectedElementIds && selectedElementIds.length > 1 && selectedElementIds.includes(elementId);
-        if (isGroup) {
-          const dx = snappedPosition.x - validPosition.x;
-          const dy = snappedPosition.y - validPosition.y;
-          updateMultipleElementPositions(selectedElementIds, { dx, dy });
-        } else {
-          updateElementPosition(elementId, snappedPosition);
-        }
-      } else if (!rafRef.current) {
-        // Schedule update for next frame if not already scheduled
-        rafRef.current = requestAnimationFrame(() => {
-          rafRef.current = null;
-          const pos = pendingPositionRef.current;
-          if (pos) {
-            lastUpdateTimeRef.current = performance.now();
-            const isGroup = selectedElementIds && selectedElementIds.length > 1 && selectedElementIds.includes(elementId);
-            if (isGroup) {
-              const dx = pos.x - validPosition.x;
-              const dy = pos.y - validPosition.y;
-              updateMultipleElementPositions(selectedElementIds, { dx, dy });
-            } else {
-              updateElementPosition(elementId, pos);
-            }
-          }
-        });
-      }
-    }
-  }, [elementId, isResizing, isRotating, isMounted, isEditable, editingElementId, updateElementPosition, updateMultipleElementPositions, selectedElementIds, setAlignmentGuides, calculateSnapPosition, validSize, validPosition]);
+  // Keep the DOM node's transform in sync with the committed position from
+  // the store. While a drag is in progress we leave the DOM transform alone
+  // — the pointer-move handler owns it. Once the drag ends and the store
+  // commits the new position, this effect re-applies the committed value.
+  useLayoutEffect(() => {
+    const node = nodeRef.current;
+    if (!node) return;
+    if (dragStateRef.current) return;
+    node.style.transform = `translate(${validPosition.x}px, ${validPosition.y}px)`;
+  }, [validPosition.x, validPosition.y]);
 
-  const handleDragStart = useCallback((e: any, data: { x: number; y: number }) => {
-    setHasMoved(false);
-    lastUpdateTimeRef.current = 0; // Reset throttle on drag start
-    // Only set global drag state to true if position actually changed
-    const positionChanged = data.x !== validPosition.x || data.y !== validPosition.y;
-    if( positionChanged ) {
-      setIsDragging(true);
-      setGlobalDragState(true, positionChanged);
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isEditable || isResizing || isRotating || !isMounted || editingElementId || isCropMode) return;
+    if (e.button !== 0) return; // primary button only
+
+    const target = e.target as Element;
+    // Don't hijack interactions started on resize/rotate handles. Handles are
+    // identified by data-attributes (see SelectionBox) — the handle's own
+    // onMouseDown starts a document-level resize/rotate loop, and we must not
+    // start a drag in parallel (which would fight for the element transform).
+    if (
+      target.closest?.('[data-resize-handle]') ||
+      target.closest?.('[data-rotation-handle]')
+    ) {
+      return;
     }
-    // Show alignment guides when starting to drag
-    setAlignmentGuides(elementId, validPosition, validSize);
-    
-    // Cache initial positions for group move
+
+    e.stopPropagation();
+
+    // Do NOT call setPointerCapture yet. Chromium retargets click/dblclick
+    // events to the capturing element, which would break the CKEditor
+    // double-click-to-edit flow on inner content. We capture later, inside
+    // pointermove, once the drag threshold has been exceeded — by then we
+    // know this is actually a drag and not a click.
+
+    // Read scale fresh from DOM at drag start so we never use a stale value.
+    const container = getRevealContainer();
+    const freshScale = container ? getRevealScale(container) : scale;
+
+    dragStateRef.current = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPosX: validPosition.x,
+      startPosY: validPosition.y,
+      scale: freshScale || 1,
+      lastDx: 0,
+      lastDy: 0,
+      moved: false,
+      rafPending: false,
+    };
+
+    // Cache initial positions for group move (read once, avoid re-reading per frame).
     if (selectedElementIds && selectedElementIds.includes(elementId) && selectedElementIds.length > 1) {
       const store = (useStore as any).getState();
       const slide = store.slides[store.currentSlide];
-      initialGroupPositionsRef.current = Object.fromEntries(slide.elements.filter(el => selectedElementIds.includes(el.id)).map(el => [el.id, { ...el.position }]));
+      const positions: Record<string, { x: number; y: number }> = {};
+      const nodes: Array<{ node: HTMLElement; startX: number; startY: number }> = [];
+      slide.elements
+        .filter((el: any) => selectedElementIds.includes(el.id))
+        .forEach((el: any) => {
+          positions[el.id] = { ...el.position };
+          if (el.id !== elementId) {
+            const node = document.querySelector(
+              `[data-element-id="${el.id}"]`
+            ) as HTMLElement | null;
+            if (node) nodes.push({ node, startX: el.position.x, startY: el.position.y });
+          }
+        });
+      initialGroupPositionsRef.current = positions;
+      groupNodesRef.current = nodes;
     } else {
       initialGroupPositionsRef.current = { [elementId]: { ...validPosition } };
+      groupNodesRef.current = [];
     }
-  }, [setGlobalDragState, validPosition.x, validPosition.y, setAlignmentGuides, elementId, validSize, selectedElementIds]);
+  }, [isEditable, isResizing, isRotating, isMounted, editingElementId, isCropMode, scale, validPosition.x, validPosition.y, selectedElementIds, elementId]);
 
-  const handleDragStop = useCallback(() => {
-    // Clear alignment guides when drag stops
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const ds = dragStateRef.current;
+    if (!ds || ds.pointerId !== e.pointerId) return;
+
+    const deltaScreenX = e.clientX - ds.startClientX;
+    const deltaScreenY = e.clientY - ds.startClientY;
+    const dx = deltaScreenX / ds.scale;
+    const dy = deltaScreenY / ds.scale;
+
+    // Drag threshold: don't register as a drag until the pointer moves more
+    // than ~3 screen pixels. Prevents accidental drags on click and lets the
+    // click handler fire normally for short clicks.
+    if (!ds.moved) {
+      if (Math.abs(deltaScreenX) <= 3 && Math.abs(deltaScreenY) <= 3) return;
+      ds.moved = true;
+      setHasMoved(true);
+      setIsDragging(true);
+      setGlobalDragState(true, true);
+      setAlignmentGuides(elementId, validPositionRef.current, validSize);
+
+      // Capture the pointer now that this is confirmed to be a drag — deferred
+      // from pointerdown so click/dblclick on short clicks fires on the real
+      // target (e.g. the CKEditor inner div) instead of being retargeted here.
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* noop */ }
+    }
+
+    ds.lastDx = dx;
+    ds.lastDy = dy;
+
+    // Direct-to-DOM transform — zero React work per frame.
+    const node = nodeRef.current;
+    if (node) {
+      node.style.transform = `translate(${ds.startPosX + dx}px, ${ds.startPosY + dy}px)`;
+    }
+    // Move the rest of the multi-selection group in lock-step.
+    for (const g of groupNodesRef.current) {
+      g.node.style.transform = `translate(${g.startX + dx}px, ${g.startY + dy}px)`;
+    }
+
+    // RAF-coalesce snap calc + guide publish (60Hz max).
+    if (!ds.rafPending) {
+      ds.rafPending = true;
+      rafRef.current = requestAnimationFrame(() => {
+        const s = dragStateRef.current;
+        rafRef.current = null;
+        if (!s) return;
+        s.rafPending = false;
+        const rawPos = { x: s.startPosX + s.lastDx, y: s.startPosY + s.lastDy };
+        const snapped = calculateSnapPosition(rawPos, validSize);
+        setAlignmentGuides(elementId, snapped, validSize);
+      });
+    }
+  }, [calculateSnapPosition, validSize, elementId, setAlignmentGuides, setGlobalDragState]);
+
+  const endDrag = useCallback((pointerId: number, hostEl: HTMLElement | null) => {
+    const ds = dragStateRef.current;
+    if (!ds || ds.pointerId !== pointerId) return;
+
+    if (hostEl && hostEl.hasPointerCapture?.(pointerId)) {
+      try { hostEl.releasePointerCapture(pointerId); } catch { /* noop */ }
+    }
+
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    const moved = ds.moved;
+
+    if (moved) {
+      const rawPos = { x: ds.startPosX + ds.lastDx, y: ds.startPosY + ds.lastDy };
+      const finalPos = calculateSnapPosition(rawPos, validSize);
+      const isGroup = selectedElementIds && selectedElementIds.length > 1 && selectedElementIds.includes(elementId);
+      if (isGroup) {
+        const deltaX = finalPos.x - validPositionRef.current.x;
+        const deltaY = finalPos.y - validPositionRef.current.y;
+        updateMultipleElementPositions(selectedElementIds, { dx: deltaX, dy: deltaY });
+      } else {
+        updateElementPosition(elementId, finalPos);
+      }
+    }
+
+    // Clear the ref FIRST so the layout effect, when it runs on the upcoming
+    // re-render, takes over the transform again.
+    dragStateRef.current = null;
+    groupNodesRef.current = [];
+
     clearAlignmentGuides();
-    
-    // Keep track that we just finished dragging for a short period
+
+    // Hold isDragging/hasMoved briefly so an onClick that fires right after
+    // pointerup doesn't treat a drag as a selection click.
     setTimeout(() => {
       setIsDragging(false);
-      setGlobalDragState(false, hasMoved);
-      // Reset hasMoved after a longer delay to ensure click events don't trigger
+      setGlobalDragState(true, moved);
       setTimeout(() => {
         setHasMoved(false);
         setGlobalDragState(false, false);
       }, 100);
-    }, 200); // Increased delay to prevent click events from firing immediately after drag
-  }, [setGlobalDragState, hasMoved, clearAlignmentGuides]);
+    }, 200);
+  }, [calculateSnapPosition, validSize, selectedElementIds, elementId, updateElementPosition, updateMultipleElementPositions, clearAlignmentGuides, setGlobalDragState]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    endDrag(e.pointerId, e.currentTarget);
+  }, [endDrag]);
+
+  const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    endDrag(e.pointerId, e.currentTarget);
+  }, [endDrag]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (!isEditable) return;
-    
+
     e.preventDefault();
     e.stopPropagation();
-    
+
     // Get the absolute position relative to the viewport
     const rect = nodeRef.current?.getBoundingClientRect();
     if (rect) {
@@ -189,7 +335,7 @@ export function ResizableDraggableElement({
   const handleElementClick = useCallback((e: React.MouseEvent) => {
     // Always stop propagation to prevent slide click events
     e.stopPropagation();
-    
+
     if (!isEditable || isDragging || hasMoved) return;
 
     // Ctrl/Cmd for toggle selection
@@ -284,7 +430,7 @@ export function ResizableDraggableElement({
     // --- RESIZE LOGIC (sample code strategy) ---
     setIsResizing(true);
     setResizeDirection(direction);
-    
+
     // Show alignment guides when starting to resize
     setAlignmentGuides(elementId, validPosition, validSize);
 
@@ -303,11 +449,11 @@ export function ResizableDraggableElement({
           case 'sw': return 'dx';
           case 'ne': return 'bx';
           case 'nw': return 'cx';
-          case 'n':  return 'ax';
-          case 's':  return 'bx';
-          case 'e':  return 'bx';
-          case 'w':  return 'ax';
-          default:   return 'ax';
+          case 'n': return 'ax';
+          case 's': return 'bx';
+          case 'e': return 'bx';
+          case 'w': return 'ax';
+          default: return 'ax';
         }
       } else if (rot === 270) {
         switch (direction) {
@@ -315,11 +461,11 @@ export function ResizableDraggableElement({
           case 'sw': return 'bx';
           case 'ne': return 'dx';
           case 'nw': return 'ax';
-          case 'n':  return 'bx';
-          case 's':  return 'ax';
-          case 'e':  return 'ax';
-          case 'w':  return 'bx';
-          default:   return 'bx';
+          case 'n': return 'bx';
+          case 's': return 'ax';
+          case 'e': return 'ax';
+          case 'w': return 'bx';
+          default: return 'bx';
         }
       } else if (rot === 180) {
         switch (direction) {
@@ -327,11 +473,11 @@ export function ResizableDraggableElement({
           case 'sw': return 'dx';
           case 'ne': return 'bx';
           case 'nw': return 'ax';
-          case 'n':  return 'ax';
-          case 's':  return 'dx';
-          case 'e':  return 'dx';
-          case 'w':  return 'bx';
-          default:   return 'cx';
+          case 'n': return 'ax';
+          case 's': return 'dx';
+          case 'e': return 'dx';
+          case 'w': return 'bx';
+          default: return 'cx';
         }
       } else {
         // Default mapping for 0 deg
@@ -340,11 +486,11 @@ export function ResizableDraggableElement({
           case 'sw': return 'bx';
           case 'ne': return 'dx';
           case 'nw': return 'cx';
-          case 'n':  return 'cx';
-          case 'e':  return 'ax';
-          case 's':  return 'ax';
-          case 'w':  return 'bx';
-          default:   return 'ax';
+          case 'n': return 'cx';
+          case 'e': return 'ax';
+          case 's': return 'ax';
+          case 'w': return 'bx';
+          default: return 'ax';
         }
       }
     }
@@ -468,7 +614,7 @@ export function ResizableDraggableElement({
 
       // Calculate snapped position for the new size and position
       const snappedPosition = calculateSnapPosition({ x: newX, y: newY }, { width: newWidth, height: newHeight });
-      
+
       // Update alignment guides with new position and size
       setAlignmentGuides(elementId, snappedPosition, { width: newWidth, height: newHeight });
 
@@ -489,7 +635,7 @@ export function ResizableDraggableElement({
     document.addEventListener('mouseup', handleMouseUp);
   }, [elementId, validSize, validPosition, validRotation, updateElementSize, updateElementPosition, updateElementRotation, isMounted, isEditable, scale, setAlignmentGuides, clearAlignmentGuides, calculateSnapPosition]);
 
-  
+
 
   const resizeHandles = [
     { direction: 'nw', className: 'top-0 left-0 cursor-nw-resize' },
@@ -515,76 +661,81 @@ export function ResizableDraggableElement({
 
   return (
     <>
-    <Draggable
-      nodeRef={nodeRef}
-      key={elementId}
-      position={validPosition}
-      onStart={handleDragStart}
-      onDrag={handleDrag as any}
-      onStop={handleDragStop}
-      disabled={!isEditable || isResizing || isRotating || !isMounted || !!editingElementId}
-      enableUserSelectHack={false}
-      scale={scale}
-    >
-      <div 
+      <div
         ref={nodeRef}
+        data-element-id={elementId}
         className="absolute"
         onContextMenu={handleContextMenu}
         onClick={handleElementClick}
         onMouseDown={handleElementMouseDown}
-        style={{ 
-          width: validSize.width, 
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        style={{
+          width: validSize.width,
           height: validSize.height,
-          // Remove transform here!
-          // ...other styles...
+          // Transform (translate for position) is managed imperatively via a
+          // layout effect + the pointer-move handler. Do not set transform
+          // here — it would fight with the direct DOM mutation during drag.
           opacity: isMounted ? 1 : 0.5,
           transition: 'opacity 0.2s ease-in-out',
           pointerEvents: isEditable ? 'auto' : 'none',
-          zIndex: zIndex || 1
+          zIndex: zIndex || 1,
+          // Disable native touch gestures (scroll/pinch) on the element so
+          // pointer events get full control during drag on touch devices.
+          touchAction: 'none',
+          // Promote selected element to its own compositor layer so dragging
+          // moves a cached bitmap instead of repainting per frame. Scoped to
+          // the selected element to avoid N compositor layers on busy slides.
+          willChange: (selectedElementId === elementId || selectedElementIds.includes(elementId)) ? 'transform' : 'auto',
         }}
       >
-  <div className={`${isEditable ? 'group' : ''} relative h-full w-full ${(!isEditable || editingElementId) ? 'cursor-default' : 'cursor-move'}`}
-          style={{
-            width: '100%',
-            height: '100%',
-            transform: `rotate(${validRotation}deg)`,
-            transformOrigin: 'center center',
-          }}
-        >
-          {/* Use the new SelectionBox component */}
-          <SelectionBox 
-            isSelected={selectedElementId === elementId || selectedElementIds.includes(elementId)}
-            isMultiSelected={selectedElementIds.length > 1 && selectedElementIds.includes(elementId)}
-            scale={scale}
-            onResizeStart={handleMouseDown}
-            onRotateStart={(e) => handleMouseDown(e, 'rotate')}
+          <div className={`${isEditable ? 'group' : ''} relative h-full w-full ${(!isEditable || editingElementId) ? 'cursor-default' : 'cursor-move'}`}
+            style={{
+              width: '100%',
+              height: '100%',
+              transform: `rotate(${validRotation}deg)`,
+              transformOrigin: 'center center',
+            }}
           >
-            {/* Content container */}
-            <div 
-              className="h-full w-full overflow-hidden content-area"
-              style={{ 
-                pointerEvents: (isDragging || hasMoved) ? 'none' : 'auto',
-                position: 'relative',
-                zIndex: 10,
-                cursor: 'inherit'
-              }}
+            {/* Use the new SelectionBox component */}
+            <SelectionBox
+              isSelected={selectedElementId === elementId || selectedElementIds.includes(elementId)}
+              isMultiSelected={selectedElementIds.length > 1 && selectedElementIds.includes(elementId)}
+              isDragging={isDragging}
+              scale={scale}
+              rotation={rotation}
+              onResizeStart={handleMouseDown}
+              onRotateStart={(e) => handleMouseDown(e, 'rotate')}
+              hideHandles={isCropMode}
+              lineMode={lineMode}
             >
-              {children}
-            </div>
-          </SelectionBox>
+              {/* Content container */}
+              <div
+                className="h-full w-full content-area"
+                style={{
+                  pointerEvents: (isDragging || hasMoved) ? 'none' : 'auto',
+                  position: 'relative',
+                  zIndex: 10,
+                  cursor: 'inherit'
+                }}
+              >
+                {children}
+              </div>
+            </SelectionBox>
+          </div>
         </div>
-      </div>
-    </Draggable>
-    
-    {/* Context Menu */}
-    {showContextMenu && (
-      <ContextMenu
-        elementId={elementId}
-        x={contextMenuPosition.x}
-        y={contextMenuPosition.y}
-        onClose={handleCloseContextMenu}
-      />
-    )}
+
+      {/* Context Menu */}
+      {showContextMenu && (
+        <ContextMenu
+          elementId={elementId}
+          x={contextMenuPosition.x}
+          y={contextMenuPosition.y}
+          onClose={handleCloseContextMenu}
+        />
+      )}
     </>
   );
 }
